@@ -1,0 +1,7 @@
+gradio>=4.0
+numpy
+scipy
+librosa
+soundfile
+torch
+torchaudio
