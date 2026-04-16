@@ -87,10 +87,14 @@ class BaseTTSAdapter(ABC):
         """返回可用说话人列表（子类可覆盖）"""
         return []
 
+    def _check_loaded(self):
+        """通用加载检查（子类可直接调用）"""
+        if not self.is_loaded:
+            raise RuntimeError(f"{self.display_name} 模型未加载，请先调用 load_model()")
+
     def validate_request(self, request: TTSRequest) -> Optional[str]:
         """校验请求，返回错误信息或 None"""
         if not request.text or not request.text.strip():
             return "文本不能为空"
         if len(request.text) > 5000:
             return "文本过长（最多 5000 字符）"
-        return None

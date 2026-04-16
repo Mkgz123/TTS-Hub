@@ -5,3 +5,5 @@ librosa
 soundfile
 torch
 torchaudio
+huggingface_hub
+pyyaml

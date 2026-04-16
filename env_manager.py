@@ -43,6 +43,17 @@ MODEL_REQUIREMENTS = {
         "transformers",
         "monotonic-align",
     ],
+    "gpt-sovits": [
+        "torch>=2.0",
+        "torchaudio",
+        "transformers",
+        "gradio",
+        "cn2an",
+        "pypinyin",
+        "pyopenjtalk",
+        "g2p_en",
+        "langid",
+    ],
 }
 
 # 共享依赖（每个环境都装）
