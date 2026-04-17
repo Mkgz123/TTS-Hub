@@ -27,6 +27,24 @@ REFERENCE_AUDIO_DIR = str(Path(__file__).parent / "reference_audios")
 # 支持的参考音频格式
 REF_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
+# 模型类型 → pip 包名映射（用于自动安装缺失依赖）
+ADAPTER_DEPENDENCIES = {
+    "fish-speech": ["fish_speech", "transformers", "torch"],
+    "f5-tts": ["f5-tts"],
+    "chattts": ["ChatTTS", "torch"],
+    "cosyvoice": ["cosyvoice"],  # 需要从源码安装
+    "kokoro": ["kokoro-onnx"],
+    "xtts": ["TTS"],
+    "moss-tts": ["safetensors", "torch", "PyYAML"],
+    "gpt-sovits": [],  # 需要从源码安装
+}
+
+# 需要从 Git 源码安装的模型（不能简单 pip install）
+_GIT_REPO_PACKAGES = {
+    "cosyvoice": "https://github.com/FunAudioLLM/CosyVoice",
+    "gpt-sovits": "https://github.com/RVC-Boss/GPT-SoVITS",
+}
+
 # 全局下载管理器
 _download_mgr = None
 
@@ -48,6 +66,105 @@ def get_reference_audio_choices() -> list[str]:
         if f.is_file() and f.suffix.lower() in REF_AUDIO_EXTENSIONS:
             choices.append(str(f))
     return choices
+
+
+def auto_install_deps(model_type: str) -> str:
+    """尝试自动安装模型所需的 pip 包"""
+    deps = ADAPTER_DEPENDENCIES.get(model_type, [])
+    if not deps:
+        return ""
+
+    # 检查哪些包缺失
+    missing = []
+    for pkg in deps:
+        # pip 名和 import 名可能不同
+        import_name = pkg.replace("-", "_").lower()
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing.append(pkg)
+
+    if not missing:
+        return ""
+
+    # 检查是否需要从 Git 源码安装
+    if model_type in _GIT_REPO_PACKAGES:
+        repo_url = _GIT_REPO_PACKAGES[model_type]
+        return (
+            f"❌ {model_type} 需要从源码安装：\n"
+            f"  git clone {repo_url}\n"
+            f"  cd {repo_url.split('/')[-1]} && pip install -r requirements.txt"
+        )
+
+    # 尝试 pip install
+    import subprocess
+    installed = []
+    failed = []
+    for pkg in missing:
+        print(f"📦 正在安装依赖: {pkg}")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", pkg, "-q"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                installed.append(pkg)
+            else:
+                failed.append(f"{pkg}: {result.stderr[:200]}")
+        except Exception as e:
+            failed.append(f"{pkg}: {e}")
+
+    msgs = []
+    if installed:
+        msgs.append(f"✅ 已安装: {', '.join(installed)}")
+    if failed:
+        msgs.append(f"❌ 安装失败: {'; '.join(failed)}")
+    return "\n".join(msgs)
+
+
+def get_model_detection_info(model_dir: str, selection: str) -> str:
+    """获取模型的检测详情文本"""
+    models = scan_models(model_dir)
+    for m in models:
+        if m["name"] in selection:
+            d = m["detection"]
+            confidence = d.get("confidence", "none")
+            method = d.get("method", "unknown")
+            mtype = d.get("model_type", "unknown")
+            error = d.get("error")
+            missing = d.get("missing_files", [])
+
+            icon = {"high": "✅", "medium": "⚠️", "low": "⚠️", "none": "❌"}.get(confidence, "❓")
+
+            lines = [f"{icon} 检测结果: {mtype}"]
+            lines.append(f"   置信度: {confidence}")
+            lines.append(f"   方法: {method}")
+
+            if confidence == "medium":
+                lines.append("   ⚠️ 仅通过目录名猜测，建议手动确认")
+            if confidence == "none":
+                lines.append("   ❌ 无法识别模型架构")
+            if error:
+                lines.append(f"   错误: {error}")
+            if missing:
+                lines.append(f"   缺少文件: {', '.join(missing)}")
+
+            # 检查依赖是否可用
+            if mtype != "unknown" and mtype not in _GIT_REPO_PACKAGES:
+                deps = ADAPTER_DEPENDENCIES.get(mtype, [])
+                missing_deps = []
+                for pkg in deps:
+                    import_name = pkg.replace("-", "_").lower()
+                    try:
+                        __import__(import_name)
+                    except ImportError:
+                        missing_deps.append(pkg)
+                if missing_deps:
+                    lines.append(f"   📦 缺少依赖（加载时自动安装）: {', '.join(missing_deps)}")
+
+            return "\n".join(lines)
+
+    return "❓ 未找到模型信息"
 
 
 def download_from_url_handler(url: str, model_dir: str) -> str:
@@ -204,6 +321,24 @@ def load_model_handler(model_dir: str, selection: str, device: str) -> str:
         features = adapter.get_supported_features()
         feat_str = " ".join(f"{'✅' if v else '❌'} {k}" for k, v in features.items())
         return f"✅ 已加载: {adapter.display_name}\n📁 {target['path']}\n🎤 特性: {feat_str}"
+    except ImportError as e:
+        # 缺少依赖 → 尝试自动安装后重试
+        install_result = auto_install_deps(model_type)
+        if install_result:
+            # 尝试重新加载
+            try:
+                # 清除旧的适配器缓存，强制重新 import
+                from core import registry
+                registry._adapter_cache.pop(model_type, None)
+                adapter = get_adapter(model_type)
+                if adapter:
+                    adapter.load_model(target["path"], device=device)
+                    features = adapter.get_supported_features()
+                    feat_str = " ".join(f"{'✅' if v else '❌'} {k}" for k, v in features.items())
+                    return f"📦 依赖安装结果:\n{install_result}\n\n✅ 已加载: {adapter.display_name}\n📁 {target['path']}\n🎤 特性: {feat_str}"
+            except Exception as retry_e:
+                return f"📦 自动安装依赖:\n{install_result}\n\n❌ 安装后仍加载失败: {retry_e}"
+        return f"❌ 加载失败: {e}"
     except Exception as e:
         return f"❌ 加载失败: {e}"
 
@@ -388,6 +523,13 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                             interactive=True,
                         )
 
+                        detection_info = gr.Textbox(
+                            label="模型检测详情",
+                            value="请选择一个模型查看检测信息",
+                            lines=5,
+                            interactive=False,
+                        )
+
                         device_dropdown = gr.Radio(
                             choices=["cuda", "cpu"],
                             value="cuda",
@@ -563,6 +705,17 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             fn=refresh_models,
             inputs=[model_dir_input],
             outputs=[model_dropdown],
+        )
+
+        # 模型选择变化时更新检测详情
+        def on_model_select(selection, model_dir):
+            info = get_model_detection_info(model_dir, selection)
+            return info
+
+        model_dropdown.change(
+            fn=on_model_select,
+            inputs=[model_dropdown, model_dir_input],
+            outputs=[detection_info],
         )
 
         def on_load(selection, device, model_dir):
