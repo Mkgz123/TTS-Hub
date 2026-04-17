@@ -5,6 +5,7 @@ TTS Hub WebUI — 基于 Gradio 的模型管理界面
 
 import os
 import sys
+import io
 import json
 import tempfile
 import argparse
@@ -235,7 +236,7 @@ def detect_single_handler(model_dir: str, model_name: str) -> str:
 
 def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
 
-    with gr.Blocks(title="TTS Hub", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="TTS Hub") as demo:
 
         gr.Markdown("# 🎙️ TTS Hub — 统一 TTS 模型管理")
         gr.Markdown("下载模型即用，自动检测架构，一键切换")
@@ -461,6 +462,11 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
 
 
 def main():
+    # 修复 Windows 终端 emoji 编码问题
+    if sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="TTS Hub WebUI")
     parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR, help="模型目录路径")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址")
@@ -479,6 +485,7 @@ def main():
         server_name=args.host,
         server_port=args.port,
         share=args.share,
+        theme=gr.themes.Soft(),
     )
 
 

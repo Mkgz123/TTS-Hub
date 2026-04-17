@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 import json
 import subprocess
 import venv
@@ -12,6 +13,12 @@ from typing import Optional
 
 
 ENVS_DIR = Path(__file__).parent / "envs"
+
+# Windows 下 venv 的 bin 目录名为 Scripts，可执行文件带 .exe
+_IS_WIN = sys.platform == "win32"
+_VENV_BIN_DIR = "Scripts" if _IS_WIN else "bin"
+_VENV_PYTHON = "python.exe" if _IS_WIN else "python"
+_VENV_PIP = "pip.exe" if _IS_WIN else "pip"
 
 # 模型 → pip 依赖列表
 MODEL_REQUIREMENTS = {
@@ -72,13 +79,13 @@ def get_env_path(model_type: str) -> Path:
 
 def env_exists(model_type: str) -> bool:
     """检查环境是否存在"""
-    python = get_env_path(model_type) / "bin" / "python"
+    python = get_env_path(model_type) / _VENV_BIN_DIR / _VENV_PYTHON
     return python.exists()
 
 
 def get_env_python(model_type: str) -> Optional[str]:
     """获取环境的 Python 解释器路径"""
-    python = get_env_path(model_type) / "bin" / "python"
+    python = get_env_path(model_type) / _VENV_BIN_DIR / _VENV_PYTHON
     if python.exists():
         return str(python)
     return None
@@ -93,7 +100,7 @@ def create_env(model_type: str) -> str:
     venv.create(str(env_path), with_pip=True)
 
     # 安装共享依赖
-    pip = str(env_path / "bin" / "pip")
+    pip = str(env_path / _VENV_BIN_DIR / _VENV_PIP)
     subprocess.run(
         [pip, "install", "--upgrade", "pip"],
         capture_output=True,
@@ -111,7 +118,7 @@ def install_model_deps(model_type: str, upgrade: bool = False) -> subprocess.Com
     if not env_exists(model_type):
         create_env(model_type)
 
-    pip = str(get_env_path(model_type) / "bin" / "pip")
+    pip = str(get_env_path(model_type) / _VENV_BIN_DIR / _VENV_PIP)
     requirements = MODEL_REQUIREMENTS.get(model_type, [])
 
     if not requirements:
@@ -151,8 +158,8 @@ def list_envs() -> list[dict]:
     results = []
     for item in sorted(ENVS_DIR.iterdir()):
         if item.is_dir():
-            python = item / "bin" / "python"
-            pip = item / "bin" / "pip"
+            python = item / _VENV_BIN_DIR / _VENV_PYTHON
+            pip = item / _VENV_BIN_DIR / _VENV_PIP
             # 获取已安装包列表
             if pip.exists():
                 result = subprocess.run(
