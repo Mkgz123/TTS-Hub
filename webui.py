@@ -22,6 +22,10 @@ from core.adapter_base import TTSRequest
 from core.download_manager import DownloadManager, KNOWN_MODELS
 
 DEFAULT_MODEL_DIR = os.environ.get("TTS_HUB_MODEL_DIR", str(Path(__file__).parent / "models"))
+REFERENCE_AUDIO_DIR = str(Path(__file__).parent / "reference_audios")
+
+# 支持的参考音频格式
+REF_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
 # 全局下载管理器
 _download_mgr = None
@@ -32,6 +36,77 @@ def get_download_manager(model_dir: str) -> DownloadManager:
     if _download_mgr is None or str(_download_mgr.model_dir) != model_dir:
         _download_mgr = DownloadManager(model_dir)
     return _download_mgr
+
+
+def get_reference_audio_choices() -> list[str]:
+    """扫描参考音频文件夹，返回可选列表"""
+    ref_dir = Path(REFERENCE_AUDIO_DIR)
+    if not ref_dir.exists():
+        return []
+    choices = []
+    for f in sorted(ref_dir.iterdir()):
+        if f.is_file() and f.suffix.lower() in REF_AUDIO_EXTENSIONS:
+            choices.append(str(f))
+    return choices
+
+
+def download_from_url_handler(url: str, model_dir: str) -> str:
+    """从自定义 URL 下载文件到模型目录"""
+    if not url or not url.strip():
+        return "❌ 请输入下载链接"
+    url = url.strip()
+
+    try:
+        import urllib.request
+        from urllib.parse import urlparse, unquote
+
+        parsed = urlparse(url)
+        # 从 URL 提取文件名
+        path_part = unquote(parsed.path.rstrip("/"))
+        filename = path_part.rsplit("/", 1)[-1] if "/" in path_part else path_part
+        if not filename:
+            filename = "downloaded_model"
+
+        dest_dir = Path(model_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / filename
+
+        # 如果是目录压缩包，下载后自动解压
+        print(f"⬇️ 正在下载: {url}")
+        urllib.request.urlretrieve(url, str(dest_path))
+
+        # 自动解压 .zip / .tar.gz / .tar / .7z
+        if dest_path.suffix in (".zip", ".gz", ".tar", ".7z", ".rar"):
+            import shutil, subprocess
+            extract_dir = dest_dir / dest_path.stem
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                if dest_path.suffix == ".zip":
+                    import zipfile
+                    with zipfile.ZipFile(str(dest_path), "r") as zf:
+                        zf.extractall(str(extract_dir))
+                elif dest_path.name.endswith((".tar.gz", ".tgz")):
+                    import tarfile
+                    with tarfile.open(str(dest_path), "r:gz") as tf:
+                        tf.extractall(str(extract_dir))
+                elif dest_path.suffix == ".tar":
+                    import tarfile
+                    with tarfile.open(str(dest_path), "r:") as tf:
+                        tf.extractall(str(extract_dir))
+                elif dest_path.suffix == ".7z":
+                    subprocess.run(["7z", "x", f"-o{extract_dir}", str(dest_path)], check=True)
+                else:
+                    return f"✅ 文件已下载\n📁 {dest_path}\n⚠️ 不支持自动解压，请手动处理"
+
+                # 删除压缩包
+                dest_path.unlink()
+                return f"✅ 下载并解压完成\n📁 {extract_dir}"
+            except Exception as extract_err:
+                return f"✅ 文件已下载，但解压失败: {extract_err}\n📁 {dest_path}"
+
+        return f"✅ 下载完成\n📁 {dest_path}"
+    except Exception as e:
+        return f"❌ 下载失败: {e}"
 
 
 # ============================================================
@@ -290,10 +365,14 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                         )
 
                         with gr.Row():
-                            tts_speaker = gr.Textbox(
-                                label="说话人 / 参考音频",
-                                placeholder="说话人 ID 或参考音频路径",
+                            tts_speaker = gr.Dropdown(
+                                label="参考音频",
+                                choices=get_reference_audio_choices(),
+                                value=None,
+                                interactive=True,
+                                allow_custom_value=False,
                             )
+                            refresh_ref_btn = gr.Button("🔄", scale=0, min_width=40)
                             tts_language = gr.Dropdown(
                                 choices=["zh", "en", "ja", "ko", "fr", "de", "es"],
                                 value="zh",
@@ -327,10 +406,14 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                             lines=10,
                         )
                     with gr.Column(scale=1):
-                        batch_speaker = gr.Textbox(
-                            label="说话人 / 参考音频",
-                            placeholder="说话人 ID 或参考音频路径",
+                        batch_speaker = gr.Dropdown(
+                            label="参考音频",
+                            choices=get_reference_audio_choices(),
+                            value=None,
+                            interactive=True,
+                            allow_custom_value=False,
                         )
+                        batch_refresh_ref_btn = gr.Button("🔄 刷新参考音频列表")
                         batch_language = gr.Dropdown(
                             choices=["zh", "en", "ja", "ko"],
                             value="zh",
@@ -372,6 +455,19 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                             interactive=False,
                         )
 
+                        gr.Markdown("### 🔗 自定义下载链接")
+                        gr.Markdown("输入模型直接下载地址（支持 .zip / .tar.gz 等压缩包自动解压）")
+                        custom_url_input = gr.Textbox(
+                            label="下载链接",
+                            placeholder="https://example.com/model.zip",
+                        )
+                        custom_url_btn = gr.Button("🔗 从链接下载", variant="secondary")
+                        custom_url_status = gr.Textbox(
+                            label="下载状态",
+                            lines=3,
+                            interactive=False,
+                        )
+
                     with gr.Column():
                         gr.Markdown("### 📂 本地模型")
                         local_refresh_btn = gr.Button("🔄 刷新列表")
@@ -381,6 +477,16 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                             lines=10,
                             interactive=False,
                         )
+
+                        gr.Markdown("### 🎵 参考音频管理")
+                        gr.Markdown(f"将参考音频文件放入 `{REFERENCE_AUDIO_DIR}` 目录")
+                        ref_audio_display = gr.Textbox(
+                            label="参考音频列表",
+                            value="\n".join(get_reference_audio_choices()) or "（目录为空）",
+                            lines=6,
+                            interactive=False,
+                        )
+                        ref_refresh_btn = gr.Button("🔄 刷新参考音频列表")
 
             # === Tab 4: 检测工具 ===
             with gr.Tab("🔍 检测工具"):
@@ -449,6 +555,34 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             fn=lambda d: list_local_models_handler(d),
             inputs=[download_dir],
             outputs=[local_models_display],
+        )
+
+        # 自定义链接下载
+        custom_url_btn.click(
+            fn=download_from_url_handler,
+            inputs=[custom_url_input, download_dir],
+            outputs=[custom_url_status],
+        )
+
+        # 参考音频刷新（主面板）
+        refresh_ref_btn.click(
+            fn=lambda: gr.update(choices=get_reference_audio_choices()),
+            inputs=[],
+            outputs=[tts_speaker],
+        )
+
+        # 参考音频刷新（批量面板）
+        batch_refresh_ref_btn.click(
+            fn=lambda: gr.update(choices=get_reference_audio_choices()),
+            inputs=[],
+            outputs=[batch_speaker],
+        )
+
+        # 参考音频管理面板刷新
+        ref_refresh_btn.click(
+            fn=lambda: "\n".join(get_reference_audio_choices()) or "（目录为空）",
+            inputs=[],
+            outputs=[ref_audio_display],
         )
 
         # 检测工具
