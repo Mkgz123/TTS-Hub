@@ -37,7 +37,7 @@ KNOWN_MODELS = {
         "coqui/XTTS-v2": "XTTSv2 官方",
     },
     "moss-tts": {
-        "MOSS-TTS/MOSS-TTS": "MOSS-TTS (如有发布)",
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "MOSS-TTS Nano 100M",
     },
     "gpt-sovits": {
         "RVC-Boss/GPT-SoVITS": "GPT-SoVITS 官方预训练",

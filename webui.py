@@ -51,10 +51,15 @@ def get_reference_audio_choices() -> list[str]:
 
 
 def download_from_url_handler(url: str, model_dir: str) -> str:
-    """从自定义 URL 下载文件到模型目录"""
+    """从自定义 URL 下载文件到模型目录（支持 HuggingFace 仓库链接）"""
     if not url or not url.strip():
         return "❌ 请输入下载链接"
     url = url.strip()
+
+    # 检测 HuggingFace 仓库链接
+    hf_match = _parse_huggingface_url(url)
+    if hf_match:
+        return _download_huggingface_repo(hf_match, model_dir)
 
     try:
         import urllib.request
@@ -71,13 +76,12 @@ def download_from_url_handler(url: str, model_dir: str) -> str:
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_path = dest_dir / filename
 
-        # 如果是目录压缩包，下载后自动解压
+        # 下载文件
         print(f"⬇️ 正在下载: {url}")
         urllib.request.urlretrieve(url, str(dest_path))
 
         # 自动解压 .zip / .tar.gz / .tar / .7z
         if dest_path.suffix in (".zip", ".gz", ".tar", ".7z", ".rar"):
-            import shutil, subprocess
             extract_dir = dest_dir / dest_path.stem
             extract_dir.mkdir(parents=True, exist_ok=True)
             try:
@@ -94,6 +98,7 @@ def download_from_url_handler(url: str, model_dir: str) -> str:
                     with tarfile.open(str(dest_path), "r:") as tf:
                         tf.extractall(str(extract_dir))
                 elif dest_path.suffix == ".7z":
+                    import subprocess
                     subprocess.run(["7z", "x", f"-o{extract_dir}", str(dest_path)], check=True)
                 else:
                     return f"✅ 文件已下载\n📁 {dest_path}\n⚠️ 不支持自动解压，请手动处理"
@@ -105,6 +110,50 @@ def download_from_url_handler(url: str, model_dir: str) -> str:
                 return f"✅ 文件已下载，但解压失败: {extract_err}\n📁 {dest_path}"
 
         return f"✅ 下载完成\n📁 {dest_path}"
+    except Exception as e:
+        return f"❌ 下载失败: {e}"
+
+
+def _parse_huggingface_url(url: str):
+    """解析 HuggingFace URL，返回 repo_id 和可选 revision"""
+    import re
+    # 匹配 https://huggingface.co/owner/repo 或包含 /tree/branch 等
+    m = re.match(r"https?://huggingface\.co/([^/]+/[^/]+?)(?:\.git)?(?:/|$)", url)
+    if m:
+        repo_id = m.group(1)
+        # 提取 revision（/tree/branch_name）
+        rev_match = re.search(r"/tree/([^/]+)", url)
+        revision = rev_match.group(1) if rev_match else None
+        return {"repo_id": repo_id, "revision": revision}
+    return None
+
+
+def _download_huggingface_repo(hf_info: dict, model_dir: str) -> str:
+    """使用 huggingface_hub 下载 HuggingFace 仓库"""
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return "❌ 需要安装 huggingface_hub: pip install huggingface_hub"
+
+    repo_id = hf_info["repo_id"]
+    revision = hf_info.get("revision")
+    safe_name = repo_id.replace("/", "__")
+    local_dir = Path(model_dir) / safe_name
+
+    try:
+        print(f"⬇️ 从 HuggingFace 下载: {repo_id}")
+        kwargs = {
+            "repo_id": repo_id,
+            "local_dir": str(local_dir),
+            "local_dir_use_symlinks": False,
+        }
+        if revision:
+            kwargs["revision"] = revision
+            print(f"   分支: {revision}")
+
+        snapshot_download(**kwargs)
+
+        return f"✅ 下载完成\n📁 {local_dir}"
     except Exception as e:
         return f"❌ 下载失败: {e}"
 
