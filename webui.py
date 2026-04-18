@@ -970,24 +970,8 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                 from env_manager import find_conda
                 return f"✅ conda 已安装\n路径: {find_conda()}"
 
-            def progress_cb(msg):
-                pass  # Gradio 不支持实时进度回调，用返回值展示
-
-            result = install_miniconda(progress_callback=progress_cb)
-
-            if result["success"]:
-                return result["message"]
-            else:
-                # 失败信息 + 重试提示
-                msg = result["message"]
-                error_type = result.get("error_type", "unknown")
-                if error_type == "download":
-                    msg += "\n\n🔄 可以点击按钮重试下载"
-                elif error_type == "install":
-                    msg += "\n\n🔄 可以点击按钮重试安装"
-                elif error_type == "timeout":
-                    msg += "\n\n🔄 网络恢复后点击按钮重试"
-                return msg
+            result = install_miniconda()
+            return result["message"]
 
         install_conda_btn.click(
             fn=install_conda_handler,
