@@ -57,10 +57,11 @@ MODEL_REQUIREMENTS = {
     },
     "moss-tts": {
         "python": "3.10",
-        "conda": ["ffmpeg"],
+        "conda": ["ffmpeg", "monotonic-align"],
+        "conda_channel": ["conda-forge"],
         "pip_cuda": ["torch>=2.0", "torchaudio"],
         "pip": [
-            "transformers", "safetensors", "PyYAML", "monotonic-align",
+            "transformers", "safetensors", "PyYAML",
         ],
     },
     "gpt-sovits": {
@@ -287,8 +288,12 @@ def create_env(model_type: str, progress_callback=None) -> str:
     # 2. 安装 conda 依赖
     conda_deps = req.get("conda", [])
     if conda_deps:
+        conda_channels = req.get("conda_channel", [])
+        channel_args = []
+        for ch in conda_channels:
+            channel_args.extend(["-c", ch])
         log(f"安装 conda 依赖: {conda_deps}")
-        cmd = [conda, "install", "-n", env_name] + conda_deps + ["-y", "-q"]
+        cmd = [conda, "install", "-n", env_name] + channel_args + conda_deps + ["-y", "-q"]
         subprocess.run(cmd, capture_output=True, text=True,
                     creationflags=_CREATE_FLAGS,
                 )
