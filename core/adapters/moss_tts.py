@@ -92,12 +92,13 @@ class MossttsAdapter(BaseTTSAdapter):
                     # 尝试加载 safetensors 格式
                     try:
                         from safetensors.torch import load_file
-                        weights = load_file(str(weight_file), device=device)
+                        load_device = device if device != "cuda" else ("cuda" if __import__("torch").cuda.is_available() else "cpu")
+                        weights = load_file(str(weight_file), device=load_device)
                     except ImportError:
                         print("需要安装 safetensors: pip install safetensors")
                         continue
                 else:
-                    # PyTorch 格式
+                    # PyTorch 格式 — map_location 自动处理 device
                     weights = torch.load(
                         str(weight_file),
                         map_location=device,
@@ -120,11 +121,21 @@ class MossttsAdapter(BaseTTSAdapter):
 
     def load_model(self, model_path: str, device: str = "cuda") -> None:
         """加载 MOSS-TTS 模型
-        
+
         Args:
             model_path: 模型目录路径
             device: 运行设备 ("cuda" 或 "cpu")
         """
+        # 自动检测 CUDA 可用性
+        if device == "cuda":
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    print("[MOSS-TTS] CUDA 不可用，回退到 CPU")
+                    device = "cpu"
+            except ImportError:
+                device = "cpu"
+
         self._device = device
         path = Path(model_path)
         

@@ -210,9 +210,17 @@ def get_env_python(model_type: str) -> Optional[str]:
         env_name = get_conda_env_name(model_type)
         for env_path in data.get("envs", []):
             if env_name in env_path:
-                python = Path(env_path) / "bin" / "python"
-                if python.exists():
-                    return str(python)
+                # 跨平台查找 Python
+                if _IS_WIN:
+                    candidates = [
+                        Path(env_path) / "python.exe",
+                        Path(env_path) / "Scripts" / "python.exe",
+                    ]
+                else:
+                    candidates = [Path(env_path) / "bin" / "python"]
+                for python in candidates:
+                    if python.exists():
+                        return str(python)
     except (json.JSONDecodeError, KeyError):
         pass
 
@@ -409,25 +417,39 @@ def list_envs() -> list[dict]:
 
         # 提取 model_type
         model_type = env_path.name.replace("ttshub-", "")
-        python = env_path / "bin" / "python"
+
+        # 查找 Python（跨平台）
+        if _IS_WIN:
+            candidates = [
+                env_path / "python.exe",
+                env_path / "Scripts" / "python.exe",
+            ]
+        else:
+            candidates = [env_path / "bin" / "python"]
+        python = None
+        for c in candidates:
+            if c.exists():
+                python = c
+                break
 
         # 获取已安装包
         packages = []
-        if python.exists():
+        if python:
             try:
                 result = subprocess.run(
                     [str(python), "-m", "pip", "list", "--format=json"],
                     capture_output=True, text=True, timeout=30,
                     creationflags=_CREATE_FLAGS,
                 )
-                packages = json.loads(result.stdout)
+                if result.returncode == 0 and result.stdout.strip():
+                    packages = json.loads(result.stdout)
             except Exception:
                 pass
 
         results.append({
             "model_type": model_type,
             "path": str(env_path),
-            "python": str(python) if python.exists() else None,
+            "python": str(python) if python else None,
             "packages_count": len(packages),
             "packages": [p.get("name", "?") for p in packages[:10]],
         })
