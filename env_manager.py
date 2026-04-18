@@ -18,6 +18,7 @@ _IS_WIN = sys.platform == "win32"
 _CREATE_FLAGS = 0x08000000 if _IS_WIN else 0  # CREATE_NO_WINDOW for Windows
 
 # 模型 → conda/pip 依赖列表
+# pip_cuda: 需要从 PyTorch CUDA 专用源安装的包
 MODEL_REQUIREMENTS = {
     "fish-speech": {
         "python": "3.10",
@@ -32,14 +33,15 @@ MODEL_REQUIREMENTS = {
     "chattts": {
         "python": "3.10",
         "conda": [],
-        "pip": ["ChatTTS", "torch", "torchaudio"],
+        "pip_cuda": ["torch", "torchaudio"],
+        "pip": ["ChatTTS"],
     },
     "cosyvoice": {
         "python": "3.10",
         "conda": ["ffmpeg"],
+        "pip_cuda": ["torch>=2.0", "torchaudio"],
         "pip": [
-            "torch>=2.0", "torchaudio", "transformers",
-            "onnxruntime-gpu", "librosa", "soundfile",
+            "transformers", "onnxruntime-gpu", "librosa", "soundfile",
         ],
         "post_install": "git clone --depth 1 https://github.com/FunAudioLLM/CosyVoice {env_dir}/CosyVoice && cd {env_dir}/CosyVoice && {pip} install -r requirements.txt",
     },
@@ -56,21 +58,41 @@ MODEL_REQUIREMENTS = {
     "moss-tts": {
         "python": "3.10",
         "conda": ["ffmpeg"],
+        "pip_cuda": ["torch>=2.0", "torchaudio"],
         "pip": [
-            "torch>=2.0", "torchaudio", "transformers",
-            "safetensors", "PyYAML", "monotonic-align",
+            "transformers", "safetensors", "PyYAML", "monotonic-align",
         ],
     },
     "gpt-sovits": {
         "python": "3.10",
         "conda": ["ffmpeg"],
+        "pip_cuda": ["torch>=2.0", "torchaudio"],
         "pip": [
-            "torch>=2.0", "torchaudio", "transformers",
-            "gradio", "cn2an", "pypinyin", "langid",
+            "transformers", "gradio", "cn2an", "pypinyin", "langid",
         ],
         "post_install": "git clone --depth 1 https://github.com/RVC-Boss/GPT-SoVITS {env_dir}/GPT-SoVITS && cd {env_dir}/GPT-SoVITS && {pip} install -r requirements.txt",
     },
 }
+
+# PyTorch CUDA pip 源
+_PIP_TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu124"
+_PIP_TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+
+
+def _has_nvidia_gpu() -> bool:
+    """检测是否有 NVIDIA GPU"""
+    try:
+        if _IS_WIN:
+            result = subprocess.run(
+                ["nvidia-smi"], capture_output=True, creationflags=_CREATE_FLAGS,
+            )
+        else:
+            result = subprocess.run(
+                ["nvidia-smi"], capture_output=True,
+            )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
 
 # 共享依赖（每个环境都装）
 SHARED_REQUIREMENTS = [
@@ -271,7 +293,25 @@ def create_env(model_type: str, progress_callback=None) -> str:
                     creationflags=_CREATE_FLAGS,
                 )
 
-    # 3. 安装 pip 依赖
+    # 3. 安装 PyTorch (CUDA 或 CPU)
+    pip_cuda_deps = req.get("pip_cuda", [])
+    pip = get_env_pip(model_type)
+    if pip_cuda_deps:
+        has_gpu = _has_nvidia_gpu()
+        if has_gpu:
+            log(f"安装 PyTorch CUDA 版: {pip_cuda_deps}")
+            torch_index = _PIP_TORCH_CUDA_INDEX
+        else:
+            log(f"未检测到 NVIDIA GPU，安装 PyTorch CPU 版: {pip_cuda_deps}")
+            torch_index = _PIP_TORCH_CPU_INDEX
+        cmd = [pip, "install", "--quiet", "--index-url", torch_index] + pip_cuda_deps
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                    creationflags=_CREATE_FLAGS,
+                )
+        if result.returncode != 0:
+            log(f"PyTorch 安装失败: {result.stderr[:300]}")
+
+    # 4. 安装普通 pip 依赖
     pip_deps = req.get("pip", [])
     all_pip = SHARED_REQUIREMENTS + pip_deps
     if all_pip:
@@ -285,7 +325,7 @@ def create_env(model_type: str, progress_callback=None) -> str:
             if result.returncode != 0:
                 log(f"pip 安装部分失败: {result.stderr[:300]}")
 
-    # 4. 后置安装步骤
+    # 5. 后置安装步骤
     post_install = req.get("post_install")
     if post_install:
         log(f"执行后置安装...")
@@ -335,28 +375,42 @@ def install_model_deps(model_type: str, upgrade: bool = False) -> dict:
             return {"success": False, "message": str(e)}
 
     req = MODEL_REQUIREMENTS.get(model_type, {})
+    pip_cuda_deps = req.get("pip_cuda", [])
     pip_deps = req.get("pip", [])
     all_pip = SHARED_REQUIREMENTS + pip_deps
 
-    if not all_pip:
+    if not all_pip and not pip_cuda_deps:
         return {"success": True, "message": "无额外依赖"}
 
     pip = get_env_pip(model_type)
     if not pip:
         return {"success": False, "message": "找不到 pip"}
 
-    cmd = [pip, "install"]
-    if upgrade:
-        cmd.append("--upgrade")
-    cmd.extend(all_pip)
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+    # 先装 CUDA 版 PyTorch
+    if pip_cuda_deps:
+        has_gpu = _has_nvidia_gpu()
+        torch_index = _PIP_TORCH_CUDA_INDEX if has_gpu else _PIP_TORCH_CPU_INDEX
+        cmd = [pip, "install", "--index-url", torch_index] + pip_cuda_deps
+        if upgrade:
+            cmd.append("--upgrade")
+        subprocess.run(cmd, capture_output=True, text=True, timeout=600,
                     creationflags=_CREATE_FLAGS,
                 )
-    if result.returncode == 0:
-        return {"success": True, "message": f"✅ 依赖安装完成: {model_type}"}
-    else:
-        return {"success": False, "message": f"安装失败: {result.stderr[:500]}"}
+
+    # 再装普通依赖
+    if all_pip:
+        cmd = [pip, "install"]
+        if upgrade:
+            cmd.append("--upgrade")
+        cmd.extend(all_pip)
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                    creationflags=_CREATE_FLAGS,
+                )
+        if result.returncode != 0:
+            return {"success": False, "message": f"安装失败: {result.stderr[:500]}"}
+
+    return {"success": True, "message": f"✅ 依赖安装完成: {model_type}"}
 
 
 def run_in_env(model_type: str, script: str, args: list = None) -> subprocess.CompletedProcess:
