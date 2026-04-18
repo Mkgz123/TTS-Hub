@@ -20,30 +20,17 @@ from core.detector import detect_model_type, list_model_dirs
 from core.registry import get_adapter, list_adapters, is_supported
 from core.adapter_base import TTSRequest
 from core.download_manager import DownloadManager, KNOWN_MODELS
+from env_manager import (
+    install_miniconda, create_env, install_model_deps, env_exists,
+    get_env_python, list_envs, remove_env, is_conda_available,
+    run_code_in_env, get_env_pip, MODEL_REQUIREMENTS,
+)
 
 DEFAULT_MODEL_DIR = os.environ.get("TTS_HUB_MODEL_DIR", str(Path(__file__).parent / "models"))
 REFERENCE_AUDIO_DIR = str(Path(__file__).parent / "reference_audios")
 
 # 支持的参考音频格式
 REF_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
-
-# 模型类型 → pip 包名映射（用于自动安装缺失依赖）
-ADAPTER_DEPENDENCIES = {
-    "fish-speech": ["fish_speech", "transformers", "torch"],
-    "f5-tts": ["f5-tts"],
-    "chattts": ["ChatTTS", "torch"],
-    "cosyvoice": ["cosyvoice"],  # 需要从源码安装
-    "kokoro": ["kokoro-onnx"],
-    "xtts": ["TTS"],
-    "moss-tts": ["safetensors", "torch", "PyYAML"],
-    "gpt-sovits": [],  # 需要从源码安装
-}
-
-# 需要从 Git 源码安装的模型（不能简单 pip install）
-_GIT_REPO_PACKAGES = {
-    "cosyvoice": "https://github.com/FunAudioLLM/CosyVoice",
-    "gpt-sovits": "https://github.com/RVC-Boss/GPT-SoVITS",
-}
 
 # 全局下载管理器
 _download_mgr = None
@@ -69,57 +56,26 @@ def get_reference_audio_choices() -> list[str]:
 
 
 def auto_install_deps(model_type: str) -> str:
-    """尝试自动安装模型所需的 pip 包"""
-    deps = ADAPTER_DEPENDENCIES.get(model_type, [])
-    if not deps:
+    """尝试自动创建 conda 环境并安装依赖"""
+    if not is_conda_available():
+        # conda 不可用，尝试自动安装
+        result = install_miniconda()
+        if not result["success"]:
+            return f"❌ {result['message']}\n请手动安装: https://docs.conda.io/en/latest/miniconda.html"
+
+    if model_type not in MODEL_REQUIREMENTS:
         return ""
 
-    # 检查哪些包缺失
-    missing = []
-    for pkg in deps:
-        # pip 名和 import 名可能不同
-        import_name = pkg.replace("-", "_").lower()
-        try:
-            __import__(import_name)
-        except ImportError:
-            missing.append(pkg)
-
-    if not missing:
+    # 检查环境是否已存在
+    if env_exists(model_type):
+        # 环境已存在，检查是否需要更新依赖
         return ""
 
-    # 检查是否需要从 Git 源码安装
-    if model_type in _GIT_REPO_PACKAGES:
-        repo_url = _GIT_REPO_PACKAGES[model_type]
-        return (
-            f"❌ {model_type} 需要从源码安装：\n"
-            f"  git clone {repo_url}\n"
-            f"  cd {repo_url.split('/')[-1]} && pip install -r requirements.txt"
-        )
-
-    # 尝试 pip install
-    import subprocess
-    installed = []
-    failed = []
-    for pkg in missing:
-        print(f"📦 正在安装依赖: {pkg}")
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", pkg, "-q"],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode == 0:
-                installed.append(pkg)
-            else:
-                failed.append(f"{pkg}: {result.stderr[:200]}")
-        except Exception as e:
-            failed.append(f"{pkg}: {e}")
-
-    msgs = []
-    if installed:
-        msgs.append(f"✅ 已安装: {', '.join(installed)}")
-    if failed:
-        msgs.append(f"❌ 安装失败: {'; '.join(failed)}")
-    return "\n".join(msgs)
+    # 创建环境并安装依赖
+    try:
+        return create_env(model_type)
+    except Exception as e:
+        return f"❌ 环境创建失败: {e}"
 
 
 def get_model_detection_info(model_dir: str, selection: str) -> str:
@@ -149,18 +105,12 @@ def get_model_detection_info(model_dir: str, selection: str) -> str:
             if missing:
                 lines.append(f"   缺少文件: {', '.join(missing)}")
 
-            # 检查依赖是否可用
-            if mtype != "unknown" and mtype not in _GIT_REPO_PACKAGES:
-                deps = ADAPTER_DEPENDENCIES.get(mtype, [])
-                missing_deps = []
-                for pkg in deps:
-                    import_name = pkg.replace("-", "_").lower()
-                    try:
-                        __import__(import_name)
-                    except ImportError:
-                        missing_deps.append(pkg)
-                if missing_deps:
-                    lines.append(f"   📦 缺少依赖（加载时自动安装）: {', '.join(missing_deps)}")
+            # 检查 conda 环境是否已创建
+            if mtype != "unknown" and mtype in MODEL_REQUIREMENTS:
+                if not env_exists(mtype):
+                    lines.append(f"   📦 需要创建 conda 环境 (ttshub-{mtype})")
+                else:
+                    lines.append(f"   ✅ conda 环境已就绪 (ttshub-{mtype})")
 
             return "\n".join(lines)
 
@@ -312,35 +262,76 @@ def load_model_handler(model_dir: str, selection: str, device: str) -> str:
     if model_type == "unknown":
         return "❌ 无法识别模型架构，请手动指定"
 
-    adapter = get_adapter(model_type)
-    if not adapter:
-        return f"❌ 未找到 {model_type} 的适配器"
+    # === Step 1: 确保 conda 环境存在 ===
+    env_status = ""
+    if not is_conda_available():
+        # 尝试自动安装 miniconda
+        miniconda_result = install_miniconda()
+        if not miniconda_result["success"]:
+            env_status = f"⚠️ conda 不可用: {miniconda_result['message']}"
+    if not env_status and not env_exists(model_type):
+        env_status = auto_install_deps(model_type)
 
-    try:
-        adapter.load_model(target["path"], device=device)
-        features = adapter.get_supported_features()
-        feat_str = " ".join(f"{'✅' if v else '❌'} {k}" for k, v in features.items())
-        return f"✅ 已加载: {adapter.display_name}\n📁 {target['path']}\n🎤 特性: {feat_str}"
-    except ImportError as e:
-        # 缺少依赖 → 尝试自动安装后重试
-        install_result = auto_install_deps(model_type)
-        if install_result:
-            # 尝试重新加载
-            try:
-                # 清除旧的适配器缓存，强制重新 import
-                from core import registry
-                registry._adapter_cache.pop(model_type, None)
-                adapter = get_adapter(model_type)
-                if adapter:
-                    adapter.load_model(target["path"], device=device)
-                    features = adapter.get_supported_features()
-                    feat_str = " ".join(f"{'✅' if v else '❌'} {k}" for k, v in features.items())
-                    return f"📦 依赖安装结果:\n{install_result}\n\n✅ 已加载: {adapter.display_name}\n📁 {target['path']}\n🎤 特性: {feat_str}"
-            except Exception as retry_e:
-                return f"📦 自动安装依赖:\n{install_result}\n\n❌ 安装后仍加载失败: {retry_e}"
-        return f"❌ 加载失败: {e}"
-    except Exception as e:
-        return f"❌ 加载失败: {e}"
+    # === Step 2: 尝试在当前进程加载 ===
+    adapter = get_adapter(model_type)
+    if adapter:
+        try:
+            adapter.load_model(target["path"], device=device)
+            features = adapter.get_supported_features()
+            feat_str = " ".join(f"{'✅' if v else '❌'} {k}" for k, v in features.items())
+            result = f"✅ 已加载: {adapter.display_name}\n📁 {target['path']}\n🎤 特性: {feat_str}"
+            if env_status:
+                result = f"📦 环境:\n{env_status}\n\n{result}"
+            return result
+        except ImportError:
+            pass  # 当前进程缺少依赖，走 subprocess 路径
+        except Exception as e:
+            result = f"❌ 加载失败: {e}"
+            if env_status:
+                result = f"📦 环境:\n{env_status}\n\n{result}"
+            return result
+
+    # === Step 3: 通过 conda 环境 subprocess 验证加载 ===
+    if is_conda_available() and env_exists(model_type):
+        # 用 conda 环境的 Python 验证模型是否可以加载
+        check_code = f"""
+import sys
+sys.path.insert(0, '{str(Path(__file__).parent)}')
+from core.registry import get_adapter
+adapter = get_adapter('{model_type}')
+if adapter:
+    adapter.load_model('{target["path"]}', device='{device}')
+    print('LOAD_OK')
+else:
+    print('LOAD_FAIL: adapter not found')
+"""
+        try:
+            stdout, stderr, rc = run_code_in_env(model_type, check_code)
+            if rc == 0 and "LOAD_OK" in stdout:
+                features = []
+                for line in stdout.strip().split("\n"):
+                    if line.startswith("FEATURES:"):
+                        features = line.split(":", 1)[1]
+                result = f"✅ 已加载 (conda: ttshub-{model_type})\n📁 {target['path']}"
+                if env_status:
+                    result = f"📦 环境:\n{env_status}\n\n{result}"
+                return result
+            else:
+                err_msg = stderr[:300] if stderr else stdout[:300]
+                result = f"❌ 加载失败 (conda环境):\n{err_msg}"
+                if env_status:
+                    result = f"📦 环境:\n{env_status}\n\n{result}"
+                return result
+        except Exception as e:
+            result = f"❌ conda 环境执行失败: {e}"
+            if env_status:
+                result = f"📦 环境:\n{env_status}\n\n{result}"
+            return result
+
+    # 两条路都走不通
+    if env_status:
+        return f"📦 环境:\n{env_status}\n\n❌ 无法加载模型，请检查依赖是否安装完成"
+    return f"❌ 未找到 {model_type} 的适配器，请检查环境配置"
 
 
 # ============================================================
@@ -352,25 +343,88 @@ def synthesize_handler(text, speaker, language, speed, model_type):
         return None, "❌ 请输入文本"
 
     adapter = get_adapter(model_type)
-    if not adapter or not adapter.is_loaded:
-        return None, "❌ 请先加载模型"
+    if adapter and adapter.is_loaded:
+        request = TTSRequest(
+            text=text,
+            speaker=speaker if speaker else None,
+            language=language,
+            speed=speed,
+        )
+        try:
+            response = adapter.synthesize(request)
+            import soundfile as sf
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            sf.write(tmp.name, response.audio, response.sample_rate)
+            info = f"✅ 合成完成 | 时长: {response.duration:.2f}s | 采样率: {response.sample_rate}Hz"
+            return tmp.name, info
+        except Exception as e:
+            return None, f"❌ 合成失败: {e}"
 
-    request = TTSRequest(
-        text=text,
-        speaker=speaker if speaker else None,
-        language=language,
-        speed=speed,
-    )
+    # 当前进程无适配器 → 尝试 conda 环境 subprocess
+    if is_conda_available() and env_exists(model_type):
+        return _synthesize_via_conda(text, speaker, language, speed, model_type)
 
+    return None, "❌ 请先加载模型"
+
+
+def _synthesize_via_conda(text, speaker, language, speed, model_type):
+    """通过 conda 环境的 subprocess 进行合成"""
+    import soundfile as sf
+    import base64
+
+    # 创建临时输出文件
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    output_path = tmp.name
+    tmp.close()
+
+    code = f"""
+import sys, json, base64, tempfile
+sys.path.insert(0, '{str(Path(__file__).parent)}')
+
+from core.registry import get_adapter
+from core.adapter_base import TTSRequest
+import soundfile as sf
+
+adapter = get_adapter('{model_type}')
+# 需要找到模型路径 — 从已加载状态或扫描
+import os
+model_dir = os.environ.get('TTS_HUB_MODEL_DIR', '{DEFAULT_MODEL_DIR}')
+
+# 尝试找到最近使用的模型路径
+from core.detector import list_model_dirs
+models = list_model_dirs(model_dir)
+target_path = None
+for m in models:
+    if m['detection']['model_type'] == '{model_type}':
+        target_path = m['path']
+        break
+
+if not target_path:
+    print('ERROR: no model found')
+    sys.exit(1)
+
+adapter.load_model(target_path, device='cuda')
+request = TTSRequest(
+    text={repr(text)},
+    speaker={repr(speaker) if speaker else None},
+    language='{language}',
+    speed={speed},
+)
+response = adapter.synthesize(request)
+sf.write('{output_path}', response.audio, response.sample_rate)
+print('SYNTH_OK')
+"""
     try:
-        response = adapter.synthesize(request)
-        import soundfile as sf
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        sf.write(tmp.name, response.audio, response.sample_rate)
-        info = f"✅ 合成完成 | 时长: {response.duration:.2f}s | 采样率: {response.sample_rate}Hz"
-        return tmp.name, info
+        stdout, stderr, rc = run_code_in_env(model_type, code)
+        if rc == 0 and "SYNTH_OK" in stdout:
+            if os.path.exists(output_path):
+                data, sr = sf.read(output_path)
+                duration = len(data) / sr
+                info = f"✅ 合成完成 (conda环境) | 时长: {duration:.2f}s | 采样率: {sr}Hz"
+                return output_path, info
+        return None, f"❌ 合成失败:\n{stderr[:300]}"
     except Exception as e:
-        return None, f"❌ 合成失败: {e}"
+        return None, f"❌ 合成异常: {e}"
 
 
 # ============================================================
@@ -693,6 +747,54 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                     detect_btn = gr.Button("检测")
                 detect_output = gr.JSON(label="检测结果")
 
+            # === Tab 5: 环境管理 ===
+            with gr.Tab("🔧 环境管理"):
+                gr.Markdown("### Conda 环境管理")
+                gr.Markdown("每个模型拥有独立 conda 环境，解决依赖冲突问题")
+
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 📋 环境状态")
+                        conda_status_btn = gr.Button("🔄 刷新状态", variant="secondary")
+                        conda_status_display = gr.Textbox(
+                            label="Conda 状态",
+                            value="点击刷新查看",
+                            lines=4,
+                            interactive=False,
+                        )
+                        env_list_display = gr.Textbox(
+                            label="已创建环境",
+                            value="点击刷新查看",
+                            lines=10,
+                            interactive=False,
+                        )
+
+                    with gr.Column():
+                        gr.Markdown("### 🛠️ 环境操作")
+                        env_model_type = gr.Dropdown(
+                            label="选择模型类型",
+                            choices=list(MODEL_REQUIREMENTS.keys()),
+                            interactive=True,
+                        )
+                        with gr.Row():
+                            env_create_btn = gr.Button("➕ 创建环境", variant="primary")
+                            env_reinstall_btn = gr.Button("🔄 重装依赖")
+                            env_remove_btn = gr.Button("🗑️ 删除环境", variant="stop")
+                        env_action_status = gr.Textbox(
+                            label="操作结果",
+                            lines=8,
+                            interactive=False,
+                        )
+
+                        gr.Markdown("### ⚡ 快速安装全部")
+                        gr.Markdown("一键为所有模型创建环境（耗时较长）")
+                        env_install_all_btn = gr.Button("🚀 安装全部环境", variant="primary")
+                        env_install_all_status = gr.Textbox(
+                            label="安装进度",
+                            lines=6,
+                            interactive=False,
+                        )
+
         # ============================================================
         # 事件绑定
         # ============================================================
@@ -792,6 +894,113 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             fn=detect_single_handler,
             inputs=[detect_dir, detect_name],
             outputs=[detect_output],
+        )
+
+        # ============================================================
+        # 环境管理事件
+        # ============================================================
+
+        def refresh_env_status():
+            """刷新 conda 状态和环境列表"""
+            if is_conda_available():
+                from env_manager import find_conda
+                conda_info = f"✅ conda 可用\n路径: {find_conda()}"
+            else:
+                conda_info = "❌ conda 未安装\n点击「创建环境」将自动安装 Miniconda"
+
+            envs = list_envs()
+            if envs:
+                lines = []
+                for e in envs:
+                    lines.append(f"📁 {e['model_type']}  |  {e['packages_count']} 包  |  {e['path']}")
+                env_text = "\n".join(lines)
+            else:
+                env_text = "暂无环境，选择模型类型后点击「创建环境」"
+
+            return conda_info, env_text
+
+        conda_status_btn.click(
+            fn=refresh_env_status,
+            inputs=[],
+            outputs=[conda_status_display, env_list_display],
+        )
+
+        def env_create_handler(model_type):
+            if not model_type:
+                return "❌ 请选择模型类型"
+            try:
+                # 先确保 conda 可用
+                if not is_conda_available():
+                    result = install_miniconda()
+                    if not result["success"]:
+                        return f"❌ {result['message']}"
+
+                msg = create_env(model_type)
+                return msg
+            except Exception as e:
+                return f"❌ 创建失败: {e}"
+
+        env_create_btn.click(
+            fn=env_create_handler,
+            inputs=[env_model_type],
+            outputs=[env_action_status],
+        )
+
+        def env_reinstall_handler(model_type):
+            if not model_type:
+                return "❌ 请选择模型类型"
+            try:
+                result = install_model_deps(model_type, upgrade=True)
+                return result["message"]
+            except Exception as e:
+                return f"❌ 操作失败: {e}"
+
+        env_reinstall_btn.click(
+            fn=env_reinstall_handler,
+            inputs=[env_model_type],
+            outputs=[env_action_status],
+        )
+
+        def env_remove_handler(model_type):
+            if not model_type:
+                return "❌ 请选择模型类型"
+            try:
+                result = remove_env(model_type)
+                return result["message"]
+            except Exception as e:
+                return f"❌ 删除失败: {e}"
+
+        env_remove_btn.click(
+            fn=env_remove_handler,
+            inputs=[env_model_type],
+            outputs=[env_action_status],
+        )
+
+        def env_install_all_handler():
+            """一键创建所有环境"""
+            if not is_conda_available():
+                result = install_miniconda()
+                if not result["success"]:
+                    return f"❌ {result['message']}"
+
+            results = []
+            for mtype in MODEL_REQUIREMENTS:
+                results.append(f"⏳ {mtype}...")
+                try:
+                    if env_exists(mtype):
+                        results[-1] = f"⏭️ {mtype}: 环境已存在，跳过"
+                    else:
+                        msg = create_env(mtype)
+                        results[-1] = f"✅ {mtype}: 创建完成"
+                except Exception as e:
+                    results[-1] = f"❌ {mtype}: {str(e)[:100]}"
+
+            return "\n".join(results)
+
+        env_install_all_btn.click(
+            fn=env_install_all_handler,
+            inputs=[],
+            outputs=[env_install_all_status],
         )
 
     return demo
