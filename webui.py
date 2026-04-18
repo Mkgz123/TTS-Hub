@@ -23,7 +23,7 @@ from core.download_manager import DownloadManager, KNOWN_MODELS
 from env_manager import (
     install_miniconda, create_env, install_model_deps, env_exists,
     get_env_python, list_envs, remove_env, is_conda_available,
-    run_code_in_env, get_env_pip, MODEL_REQUIREMENTS,
+    run_code_in_env, get_env_pip, MODEL_REQUIREMENTS, startup_check,
 )
 
 DEFAULT_MODEL_DIR = os.environ.get("TTS_HUB_MODEL_DIR", str(Path(__file__).parent / "models"))
@@ -902,22 +902,25 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
 
         def refresh_env_status():
             """刷新 conda 状态和环境列表"""
-            if is_conda_available():
-                from env_manager import find_conda
-                conda_info = f"✅ conda 可用\n路径: {find_conda()}"
-            else:
-                conda_info = "❌ conda 未安装\n点击「创建环境」将自动安装 Miniconda"
+            try:
+                if is_conda_available():
+                    from env_manager import find_conda
+                    conda_info = f"✅ conda 可用\n路径: {find_conda()}"
+                else:
+                    conda_info = "❌ conda 未安装\n点击「创建环境」将自动安装 Miniconda"
 
-            envs = list_envs()
-            if envs:
-                lines = []
-                for e in envs:
-                    lines.append(f"📁 {e['model_type']}  |  {e['packages_count']} 包  |  {e['path']}")
-                env_text = "\n".join(lines)
-            else:
-                env_text = "暂无环境，选择模型类型后点击「创建环境」"
+                envs = list_envs()
+                if envs:
+                    lines = []
+                    for e in envs:
+                        lines.append(f"📁 {e['model_type']}  |  {e['packages_count']} 包  |  {e['path']}")
+                    env_text = "\n".join(lines)
+                else:
+                    env_text = "暂无环境，选择模型类型后点击「创建环境」"
 
-            return conda_info, env_text
+                return conda_info, env_text
+            except Exception as e:
+                return f"❌ 检查失败: {e}", "无法获取环境列表"
 
         conda_status_btn.click(
             fn=refresh_env_status,
@@ -1020,9 +1023,32 @@ def main():
     args = parser.parse_args()
 
     Path(args.model_dir).mkdir(parents=True, exist_ok=True)
+    Path(REFERENCE_AUDIO_DIR).mkdir(parents=True, exist_ok=True)
 
     print(f"🎙️ TTS Hub 启动中...")
+
+    # === 启动检查 ===
+    print("🔍 检查系统环境...")
+    status = startup_check()
+
+    if status["conda_available"]:
+        print(f"✅ conda 可用: {status['conda_path']}")
+        envs = status["envs"]
+        if envs:
+            print(f"📦 已创建 {len(envs)} 个模型环境:")
+            for e in envs:
+                print(f"   ttshub-{e['model_type']}: {e['packages_count']} 包")
+        else:
+            print("📦 暂无模型环境，首次加载模型时将自动创建")
+    else:
+        print("⚠️ conda 未安装")
+        print("   首次加载模型时将自动安装 Miniconda")
+
+    for w in status.get("warnings", []):
+        print(f"⚠️ {w}")
+
     print(f"📁 模型目录: {args.model_dir}")
+    print(f"📁 参考音频: {REFERENCE_AUDIO_DIR}")
     print(f"🌐 访问: http://localhost:{args.port}")
 
     demo = build_ui(args.model_dir)

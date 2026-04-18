@@ -93,13 +93,37 @@ def find_conda() -> Optional[str]:
             _conda_bin = result.stdout.strip()
             return _conda_bin
 
-        # 常见安装路径
-        for base in [Path.home(), Path("/opt"), Path("/root")]:
-            for subdir in ["miniconda3", "anaconda3", "miniforge3", "mambaforge"]:
-                candidate = base / subdir / "bin" / name
-                if candidate.exists():
-                    _conda_bin = str(candidate)
-                    return _conda_bin
+    # 常见安装路径搜索
+    search_bases = [
+        Path.home(),
+        Path("/opt"),
+        Path("/root"),
+        Path("/usr/local"),
+    ]
+    search_subdirs = [
+        "miniconda3", "anaconda3", "miniforge3", "mambaforge",
+        "miniconda", "anaconda",
+    ]
+    bin_names = ["conda", "mamba", "micromamba"]
+
+    for base in search_bases:
+        for subdir in search_subdirs:
+            for bin_name in bin_names:
+                candidate = base / subdir / "bin" / bin_name
+                try:
+                    if candidate.exists():
+                        _conda_bin = str(candidate)
+                        return _conda_bin
+                except (PermissionError, OSError):
+                    continue
+                # condabin 路径
+                candidate2 = base / subdir / "condabin" / bin_name
+                try:
+                    if candidate2.exists():
+                        _conda_bin = str(candidate2)
+                        return _conda_bin
+                except (PermissionError, OSError):
+                    continue
 
     return None
 
@@ -331,7 +355,7 @@ def list_envs() -> list[dict]:
 
     try:
         data = json.loads(result.stdout)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError):
         return []
 
     results = []
@@ -362,10 +386,41 @@ def list_envs() -> list[dict]:
             "path": str(env_path),
             "python": str(python) if python.exists() else None,
             "packages_count": len(packages),
-            "packages": [p["name"] for p in packages[:10]],
+            "packages": [p.get("name", "?") for p in packages[:10]],
         })
 
     return results
+
+
+def startup_check() -> dict:
+    """启动时检查系统状态
+
+    Returns:
+        {
+            "conda_available": bool,
+            "conda_path": str|None,
+            "envs": list,
+            "warnings": list,
+        }
+    """
+    warnings = []
+
+    conda_path = find_conda()
+    conda_ok = conda_path is not None
+
+    if not conda_ok:
+        warnings.append("conda 未安装，首次加载模型时将自动安装 Miniconda")
+
+    envs = []
+    if conda_ok:
+        envs = list_envs()
+
+    return {
+        "conda_available": conda_ok,
+        "conda_path": conda_path,
+        "envs": envs,
+        "warnings": warnings,
+    }
 
 
 def remove_env(model_type: str) -> dict:
