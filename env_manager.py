@@ -295,8 +295,8 @@ def create_env(model_type: str, progress_callback=None) -> str:
 
     # 3. 安装 PyTorch (CUDA 或 CPU)
     pip_cuda_deps = req.get("pip_cuda", [])
-    pip = get_env_pip(model_type)
-    if pip_cuda_deps:
+    pip_cmd = get_env_pip(model_type)
+    if pip_cuda_deps and pip_cmd:
         has_gpu = _has_nvidia_gpu()
         if has_gpu:
             log(f"安装 PyTorch CUDA 版: {pip_cuda_deps}")
@@ -304,7 +304,7 @@ def create_env(model_type: str, progress_callback=None) -> str:
         else:
             log(f"未检测到 NVIDIA GPU，安装 PyTorch CPU 版: {pip_cuda_deps}")
             torch_index = _PIP_TORCH_CPU_INDEX
-        cmd = [pip, "install", "--quiet", "--index-url", torch_index] + pip_cuda_deps
+        cmd = pip_cmd + ["install", "--quiet", "--index-url", torch_index] + pip_cuda_deps
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
                     creationflags=_CREATE_FLAGS,
                 )
@@ -316,9 +316,9 @@ def create_env(model_type: str, progress_callback=None) -> str:
     all_pip = SHARED_REQUIREMENTS + pip_deps
     if all_pip:
         log(f"安装 pip 依赖 ({len(all_pip)} 个包)...")
-        pip = get_env_pip(model_type)
-        if pip:
-            cmd = [pip, "install", "--quiet"] + all_pip
+        pip_cmd = get_env_pip(model_type)
+        if pip_cmd:
+            cmd = pip_cmd + ["install", "--quiet"] + all_pip
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
                     creationflags=_CREATE_FLAGS,
                 )
@@ -329,10 +329,11 @@ def create_env(model_type: str, progress_callback=None) -> str:
     post_install = req.get("post_install")
     if post_install:
         log(f"执行后置安装...")
-        pip = get_env_pip(model_type)
+        pip_cmd = get_env_pip(model_type)
+        pip_str = " ".join(pip_cmd) if pip_cmd else "pip"
         post_cmd = post_install.format(
             env_dir=str(get_env_path(model_type)),
-            pip=pip or "pip",
+            pip=pip_str,
         )
         subprocess.run(
             post_cmd, shell=True, capture_output=True, text=True, timeout=300,
@@ -343,16 +344,34 @@ def create_env(model_type: str, progress_callback=None) -> str:
     return f"✅ 环境创建完成: {env_name}"
 
 
-def get_env_pip(model_type: str) -> Optional[str]:
-    """获取环境的 pip 路径"""
+def get_env_pip(model_type: str) -> Optional[list]:
+    """获取环境的 pip 命令
+
+    Returns:
+        list: 命令前缀，如 ["C:/..../pip.exe"] 或 ["C:/..../python.exe", "-m", "pip"]
+        None: 环境不存在
+    """
     python = get_env_python(model_type)
-    if python:
-        pip = Path(python).parent / "pip"
+    if not python:
+        return None
+
+    python_path = Path(python)
+    parent = python_path.parent
+
+    if _IS_WIN:
+        candidates = [
+            parent / "Scripts" / "pip.exe",
+            parent / "pip.exe",
+        ]
+    else:
+        candidates = [parent / "pip"]
+
+    for pip in candidates:
         if pip.exists():
-            return str(pip)
-        # fallback: python -m pip
-        return python
-    return None
+            return [str(pip)]
+
+    # fallback: python -m pip
+    return [python, "-m", "pip"]
 
 
 def install_model_deps(model_type: str, upgrade: bool = False) -> dict:
@@ -382,15 +401,15 @@ def install_model_deps(model_type: str, upgrade: bool = False) -> dict:
     if not all_pip and not pip_cuda_deps:
         return {"success": True, "message": "无额外依赖"}
 
-    pip = get_env_pip(model_type)
-    if not pip:
+    pip_cmd = get_env_pip(model_type)
+    if not pip_cmd:
         return {"success": False, "message": "找不到 pip"}
 
     # 先装 CUDA 版 PyTorch
     if pip_cuda_deps:
         has_gpu = _has_nvidia_gpu()
         torch_index = _PIP_TORCH_CUDA_INDEX if has_gpu else _PIP_TORCH_CPU_INDEX
-        cmd = [pip, "install", "--index-url", torch_index] + pip_cuda_deps
+        cmd = pip_cmd + ["install", "--index-url", torch_index] + pip_cuda_deps
         if upgrade:
             cmd.append("--upgrade")
         subprocess.run(cmd, capture_output=True, text=True, timeout=600,
@@ -399,7 +418,7 @@ def install_model_deps(model_type: str, upgrade: bool = False) -> dict:
 
     # 再装普通依赖
     if all_pip:
-        cmd = [pip, "install"]
+        cmd = pip_cmd + ["install"]
         if upgrade:
             cmd.append("--upgrade")
         cmd.extend(all_pip)
