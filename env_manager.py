@@ -13,6 +13,10 @@ from typing import Optional
 
 ENVS_DIR = Path(__file__).parent / "envs"
 
+# 跨平台兼容
+_IS_WIN = sys.platform == "win32"
+_CREATE_FLAGS = 0x08000000 if _IS_WIN else 0  # CREATE_NO_WINDOW for Windows
+
 # 模型 → conda/pip 依赖列表
 MODEL_REQUIREMENTS = {
     "fish-speech": {
@@ -83,47 +87,65 @@ def find_conda() -> Optional[str]:
     if _conda_bin:
         return _conda_bin
 
-    # 优先级: conda > mamba > micromamba
-    for name in ["conda", "mamba", "micromamba"]:
-        # PATH 中查找
-        result = subprocess.run(
-            ["which", name], capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            _conda_bin = result.stdout.strip()
-            return _conda_bin
-
-    # 常见安装路径搜索
-    search_bases = [
-        Path.home(),
-        Path("/opt"),
-        Path("/root"),
-        Path("/usr/local"),
-    ]
-    search_subdirs = [
-        "miniconda3", "anaconda3", "miniforge3", "mambaforge",
-        "miniconda", "anaconda",
-    ]
     bin_names = ["conda", "mamba", "micromamba"]
 
+    # 1. PATH 中查找（跨平台）
+    for name in bin_names:
+        try:
+            if _IS_WIN:
+                result = subprocess.run(
+                    ["where", name], capture_output=True, text=True,
+                    creationflags=_CREATE_FLAGS,
+                )
+            else:
+                result = subprocess.run(
+                    ["which", name], capture_output=True, text=True,
+                    creationflags=_CREATE_FLAGS,
+                )
+            if result.returncode == 0:
+                _conda_bin = result.stdout.strip().split("\n")[0].strip()
+                return _conda_bin
+        except (FileNotFoundError, OSError):
+            continue
+
+    # 2. 常见安装路径搜索
+    if _IS_WIN:
+        search_bases = [
+            Path.home(),
+            Path(os.environ.get("USERPROFILE", "")),
+            Path(os.environ.get("LOCALAPPDATA", "")),
+            Path("C:/"),
+            Path("D:/"),
+        ]
+        search_subdirs = [
+            "miniconda3", "anaconda3", "miniforge3", "mambaforge",
+            "Miniconda3", "Anaconda3",
+            "ProgramData/miniconda3", "ProgramData/anaconda3",
+        ]
+        exe_names = ["conda.exe", "mamba.exe", "micromamba.exe"]
+        bin_subdirs = ["Scripts", "condabin"]
+    else:
+        search_bases = [Path.home(), Path("/opt"), Path("/root"), Path("/usr/local")]
+        search_subdirs = [
+            "miniconda3", "anaconda3", "miniforge3", "mambaforge",
+            "miniconda", "anaconda",
+        ]
+        exe_names = bin_names
+        bin_subdirs = ["bin", "condabin"]
+
     for base in search_bases:
+        if not base or not base.exists():
+            continue
         for subdir in search_subdirs:
-            for bin_name in bin_names:
-                candidate = base / subdir / "bin" / bin_name
-                try:
-                    if candidate.exists():
-                        _conda_bin = str(candidate)
-                        return _conda_bin
-                except (PermissionError, OSError):
-                    continue
-                # condabin 路径
-                candidate2 = base / subdir / "condabin" / bin_name
-                try:
-                    if candidate2.exists():
-                        _conda_bin = str(candidate2)
-                        return _conda_bin
-                except (PermissionError, OSError):
-                    continue
+            for bin_sub in bin_subdirs:
+                for exe_name in exe_names:
+                    candidate = base / subdir / bin_sub / exe_name
+                    try:
+                        if candidate.exists():
+                            _conda_bin = str(candidate)
+                            return _conda_bin
+                    except (PermissionError, OSError):
+                        continue
 
     return None
 
@@ -152,6 +174,7 @@ def env_exists(model_type: str) -> bool:
     result = subprocess.run(
         [conda, "env", "list", "--json"],
         capture_output=True, text=True,
+        creationflags=_CREATE_FLAGS,
     )
     if result.returncode != 0:
         return False
@@ -177,6 +200,7 @@ def get_env_python(model_type: str) -> Optional[str]:
     result = subprocess.run(
         [conda, "env", "list", "--json"],
         capture_output=True, text=True,
+        creationflags=_CREATE_FLAGS,
     )
     if result.returncode != 0:
         return None
@@ -221,7 +245,9 @@ def create_env(model_type: str, progress_callback=None) -> str:
     # 1. 创建环境
     log(f"创建 conda 环境: {env_name} (Python {python_ver})")
     cmd = [conda, "create", "-n", env_name, f"python={python_ver}", "-y", "-q"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                    creationflags=_CREATE_FLAGS,
+                )
     if result.returncode != 0:
         raise RuntimeError(f"创建环境失败: {result.stderr[:500]}")
 
@@ -230,7 +256,9 @@ def create_env(model_type: str, progress_callback=None) -> str:
     if conda_deps:
         log(f"安装 conda 依赖: {conda_deps}")
         cmd = [conda, "install", "-n", env_name] + conda_deps + ["-y", "-q"]
-        subprocess.run(cmd, capture_output=True, text=True)
+        subprocess.run(cmd, capture_output=True, text=True,
+                    creationflags=_CREATE_FLAGS,
+                )
 
     # 3. 安装 pip 依赖
     pip_deps = req.get("pip", [])
@@ -240,7 +268,9 @@ def create_env(model_type: str, progress_callback=None) -> str:
         pip = get_env_pip(model_type)
         if pip:
             cmd = [pip, "install", "--quiet"] + all_pip
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                    creationflags=_CREATE_FLAGS,
+                )
             if result.returncode != 0:
                 log(f"pip 安装部分失败: {result.stderr[:300]}")
 
@@ -255,6 +285,7 @@ def create_env(model_type: str, progress_callback=None) -> str:
         )
         subprocess.run(
             post_cmd, shell=True, capture_output=True, text=True, timeout=300,
+            creationflags=_CREATE_FLAGS,
         )
 
     log(f"环境创建完成: {env_name}")
@@ -306,7 +337,9 @@ def install_model_deps(model_type: str, upgrade: bool = False) -> dict:
         cmd.append("--upgrade")
     cmd.extend(all_pip)
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                    creationflags=_CREATE_FLAGS,
+                )
     if result.returncode == 0:
         return {"success": True, "message": f"✅ 依赖安装完成: {model_type}"}
     else:
@@ -320,7 +353,9 @@ def run_in_env(model_type: str, script: str, args: list = None) -> subprocess.Co
         raise RuntimeError(f"环境不存在: {model_type}")
 
     cmd = [python, script] + (args or [])
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True,
+                    creationflags=_CREATE_FLAGS,
+                )
 
 
 def run_code_in_env(model_type: str, code: str) -> tuple:
@@ -336,6 +371,7 @@ def run_code_in_env(model_type: str, code: str) -> tuple:
     result = subprocess.run(
         [python, "-c", code],
         capture_output=True, text=True, timeout=120,
+        creationflags=_CREATE_FLAGS,
     )
     return result.stdout, result.stderr, result.returncode
 
@@ -349,6 +385,7 @@ def list_envs() -> list[dict]:
     result = subprocess.run(
         [conda, "env", "list", "--json"],
         capture_output=True, text=True,
+        creationflags=_CREATE_FLAGS,
     )
     if result.returncode != 0:
         return []
@@ -376,6 +413,7 @@ def list_envs() -> list[dict]:
                 result = subprocess.run(
                     [str(python), "-m", "pip", "list", "--format=json"],
                     capture_output=True, text=True, timeout=30,
+                    creationflags=_CREATE_FLAGS,
                 )
                 packages = json.loads(result.stdout)
             except Exception:
@@ -433,6 +471,7 @@ def remove_env(model_type: str) -> dict:
     result = subprocess.run(
         [conda, "env", "remove", "-n", env_name, "-y", "-q"],
         capture_output=True, text=True,
+        creationflags=_CREATE_FLAGS,
     )
     if result.returncode == 0:
         return {"success": True, "message": f"已删除环境: {env_name}"}
@@ -452,14 +491,21 @@ def install_miniconda(install_dir: str = None) -> dict:
         return {"success": True, "message": "conda 已安装", "path": find_conda()}
 
     if install_dir is None:
-        install_dir = str(Path.home() / "miniconda3")
+        if _IS_WIN:
+            install_dir = str(Path.home() / "miniconda3")
+        else:
+            install_dir = str(Path.home() / "miniconda3")
 
     install_path = Path(install_dir)
     if install_path.exists():
         # 可能已安装但不在 PATH
-        conda_bin = install_path / "bin" / "conda"
+        if _IS_WIN:
+            conda_bin = install_path / "Scripts" / "conda.exe"
+            if not conda_bin.exists():
+                conda_bin = install_path / "condabin" / "conda.bat"
+        else:
+            conda_bin = install_path / "bin" / "conda"
         if conda_bin.exists():
-            global _conda_bin
             _conda_bin = str(conda_bin)
             return {"success": True, "message": "conda 已安装（不在 PATH 中）", "path": str(conda_bin)}
 
@@ -467,45 +513,83 @@ def install_miniconda(install_dir: str = None) -> dict:
     import platform
 
     arch = platform.machine()
-    if arch == "x86_64":
-        url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
-    elif arch == "aarch64":
-        url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"
+
+    if _IS_WIN:
+        if arch in ("AMD64", "x86_64"):
+            url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe"
+        elif arch == "ARM64":
+            url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-arm64.exe"
+        else:
+            return {"success": False, "message": f"不支持的架构: {arch}"}
     else:
-        return {"success": False, "message": f"不支持的架构: {arch}"}
+        if arch == "x86_64":
+            url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+        elif arch == "aarch64":
+            url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"
+        else:
+            return {"success": False, "message": f"不支持的架构: {arch}"}
 
     try:
-        # 下载安装脚本
-        installer = Path(tempfile.gettempdir()) / "miniconda_installer.sh"
-        print(f"[EnvManager] 下载 Miniconda: {url}")
-        subprocess.run(
-            ["curl", "-fsSL", "-o", str(installer), url],
-            check=True, timeout=120,
-        )
+        if _IS_WIN:
+            # Windows: 下载 .exe 并静默安装
+            installer = Path(tempfile.gettempdir()) / "miniconda_installer.exe"
+            print(f"[EnvManager] 下载 Miniconda (Windows): {url}")
+            subprocess.run(
+                ["curl", "-fsSL", "-o", str(installer), url],
+                check=True, timeout=120,
+                creationflags=_CREATE_FLAGS,
+            )
 
-        # 运行安装
-        print(f"[EnvManager] 安装到: {install_dir}")
-        subprocess.run(
-            ["bash", str(installer), "-b", "-p", install_dir],
-            check=True, timeout=300,
-        )
+            print(f"[EnvManager] 静默安装到: {install_dir}")
+            subprocess.run(
+                [str(installer), "/InstallationType=JustMe", "/AddToPath=0",
+                 "/RegisterPython=0", "/S", f"/D={install_dir}"],
+                check=True, timeout=600,
+                creationflags=_CREATE_FLAGS,
+            )
 
-        # 初始化 conda
-        conda_bin = str(install_path / "bin" / "conda")
-        subprocess.run(
-            [conda_bin, "init", "bash"],
-            capture_output=True, timeout=60,
-        )
+            installer.unlink(missing_ok=True)
 
-        # 清理安装包
-        installer.unlink(missing_ok=True)
+            conda_bin = install_path / "Scripts" / "conda.exe"
+            if not conda_bin.exists():
+                conda_bin = install_path / "condabin" / "conda.bat"
 
-        _conda_bin = conda_bin
+        else:
+            # Linux/macOS: 下载 .sh 并 bash 安装
+            installer = Path(tempfile.gettempdir()) / "miniconda_installer.sh"
+            print(f"[EnvManager] 下载 Miniconda: {url}")
+            subprocess.run(
+                ["curl", "-fsSL", "-o", str(installer), url],
+                check=True, timeout=120,
+                creationflags=_CREATE_FLAGS,
+            )
+
+            print(f"[EnvManager] 安装到: {install_dir}")
+            subprocess.run(
+                ["bash", str(installer), "-b", "-p", install_dir],
+                check=True, timeout=300,
+                creationflags=_CREATE_FLAGS,
+            )
+
+            # 初始化 conda
+            conda_bin = install_path / "bin" / "conda"
+            subprocess.run(
+                [str(conda_bin), "init", "bash"],
+                capture_output=True, timeout=60,
+                creationflags=_CREATE_FLAGS,
+            )
+
+            installer.unlink(missing_ok=True)
+
+        if not conda_bin.exists():
+            return {"success": False, "message": "安装完成但找不到 conda 可执行文件"}
+
+        _conda_bin = str(conda_bin)
 
         return {
             "success": True,
             "message": f"✅ Miniconda 安装完成: {install_dir}",
-            "path": conda_bin,
+            "path": str(conda_bin),
         }
     except Exception as e:
         return {"success": False, "message": f"安装失败: {e}"}
