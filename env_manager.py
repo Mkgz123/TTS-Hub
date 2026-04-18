@@ -479,22 +479,29 @@ def remove_env(model_type: str) -> dict:
         return {"success": False, "message": f"删除失败: {result.stderr[:300]}"}
 
 
-def install_miniconda(install_dir: str = None) -> dict:
-    """自动安装 Miniconda
+def install_miniconda(install_dir: str = None, max_retries: int = 3, progress_callback=None) -> dict:
+    """自动安装 Miniconda（支持重试）
+
+    Args:
+        install_dir: 安装目录
+        max_retries: 下载失败最大重试次数
+        progress_callback: fn(message: str) 进度回调
 
     Returns:
         {"success": bool, "message": str, "path": str}
     """
     global _conda_bin
 
+    def log(msg):
+        print(f"[EnvManager] {msg}")
+        if progress_callback:
+            progress_callback(msg)
+
     if is_conda_available():
         return {"success": True, "message": "conda 已安装", "path": find_conda()}
 
     if install_dir is None:
-        if _IS_WIN:
-            install_dir = str(Path.home() / "miniconda3")
-        else:
-            install_dir = str(Path.home() / "miniconda3")
+        install_dir = str(Path.home() / "miniconda3")
 
     install_path = Path(install_dir)
     if install_path.exists():
@@ -529,70 +536,140 @@ def install_miniconda(install_dir: str = None) -> dict:
         else:
             return {"success": False, "message": f"不支持的架构: {arch}"}
 
+    # 下载器（带重试）
+    def download_with_retry(url, dest, retries=max_retries):
+        last_error = None
+        for attempt in range(1, retries + 1):
+            try:
+                log(f"⬇️ 下载 Miniconda ({attempt}/{retries})...")
+                result = subprocess.run(
+                    ["curl", "-fsSL", "--connect-timeout", "15",
+                     "--max-time", "300", "-o", str(dest), url],
+                    capture_output=True, text=True, timeout=310,
+                    creationflags=_CREATE_FLAGS,
+                )
+                if result.returncode == 0 and dest.exists():
+                    log(f"✅ 下载完成 ({dest.stat().st_size / 1024 / 1024:.1f} MB)")
+                    return True, None
+                else:
+                    err = result.stderr.strip()[:300] if result.stderr else f"退出码: {result.returncode}"
+                    last_error = err
+                    log(f"❌ 下载失败: {err}")
+            except subprocess.TimeoutExpired:
+                last_error = "下载超时（>310秒）"
+                log(f"❌ {last_error}")
+            except FileNotFoundError:
+                last_error = "系统未安装 curl，请先安装 curl"
+                log(f"❌ {last_error}")
+                return False, last_error  # 不可恢复
+            except Exception as e:
+                last_error = str(e)
+                log(f"❌ 下载异常: {e}")
+
+            if attempt < retries:
+                wait = attempt * 5
+                log(f"⏳ {wait}秒后重试...")
+                import time
+                time.sleep(wait)
+
+        return False, last_error
+
+    # 安装流程
     try:
         if _IS_WIN:
-            # Windows: 下载 .exe 并静默安装
             installer = Path(tempfile.gettempdir()) / "miniconda_installer.exe"
-            print(f"[EnvManager] 下载 Miniconda (Windows): {url}")
-            subprocess.run(
-                ["curl", "-fsSL", "-o", str(installer), url],
-                check=True, timeout=120,
-                creationflags=_CREATE_FLAGS,
-            )
+        else:
+            installer = Path(tempfile.gettempdir()) / "miniconda_installer.sh"
 
-            print(f"[EnvManager] 静默安装到: {install_dir}")
-            subprocess.run(
+        # 清理旧的残留文件
+        if installer.exists():
+            installer.unlink(missing_ok=True)
+
+        # Step 1: 下载
+        ok, error = download_with_retry(url, installer)
+        if not ok:
+            return {
+                "success": False,
+                "message": f"❌ Miniconda 下载失败（重试 {max_retries} 次）\n\n错误: {error}\n\n可能原因:\n1. 网络连接问题 — 检查代理或网络设置\n2. 磁盘空间不足\n3. 防火墙拦截\n\n手动下载: {url}",
+                "error_type": "download",
+                "url": url,
+            }
+
+        # Step 2: 安装
+        if _IS_WIN:
+            log("📦 正在安装 Miniconda (Windows)...")
+            result = subprocess.run(
                 [str(installer), "/InstallationType=JustMe", "/AddToPath=0",
                  "/RegisterPython=0", "/S", f"/D={install_dir}"],
-                check=True, timeout=600,
+                capture_output=True, text=True, timeout=600,
                 creationflags=_CREATE_FLAGS,
             )
-
-            installer.unlink(missing_ok=True)
+            if result.returncode != 0:
+                return {
+                    "success": False,
+                    "message": f"❌ Miniconda 安装失败\n退出码: {result.returncode}\n错误: {result.stderr[:300]}",
+                    "error_type": "install",
+                }
 
             conda_bin = install_path / "Scripts" / "conda.exe"
             if not conda_bin.exists():
                 conda_bin = install_path / "condabin" / "conda.bat"
-
         else:
-            # Linux/macOS: 下载 .sh 并 bash 安装
-            installer = Path(tempfile.gettempdir()) / "miniconda_installer.sh"
-            print(f"[EnvManager] 下载 Miniconda: {url}")
-            subprocess.run(
-                ["curl", "-fsSL", "-o", str(installer), url],
-                check=True, timeout=120,
-                creationflags=_CREATE_FLAGS,
-            )
-
-            print(f"[EnvManager] 安装到: {install_dir}")
-            subprocess.run(
+            log("📦 正在安装 Miniconda (Linux)...")
+            result = subprocess.run(
                 ["bash", str(installer), "-b", "-p", install_dir],
-                check=True, timeout=300,
+                capture_output=True, text=True, timeout=300,
                 creationflags=_CREATE_FLAGS,
             )
+            if result.returncode != 0:
+                return {
+                    "success": False,
+                    "message": f"❌ Miniconda 安装失败\n退出码: {result.returncode}\n错误: {result.stderr[:300]}",
+                    "error_type": "install",
+                }
+
+            conda_bin = install_path / "bin" / "conda"
 
             # 初始化 conda
-            conda_bin = install_path / "bin" / "conda"
+            log("🔧 初始化 conda...")
             subprocess.run(
                 [str(conda_bin), "init", "bash"],
                 capture_output=True, timeout=60,
                 creationflags=_CREATE_FLAGS,
             )
 
-            installer.unlink(missing_ok=True)
+        # 清理安装包
+        installer.unlink(missing_ok=True)
 
+        # 验证安装
         if not conda_bin.exists():
-            return {"success": False, "message": "安装完成但找不到 conda 可执行文件"}
+            return {
+                "success": False,
+                "message": f"❌ 安装完成但找不到 conda\n期望路径: {conda_bin}\n请检查安装目录: {install_dir}",
+                "error_type": "verify",
+            }
 
         _conda_bin = str(conda_bin)
+        log(f"✅ Miniconda 安装完成: {install_dir}")
 
         return {
             "success": True,
-            "message": f"✅ Miniconda 安装完成: {install_dir}",
+            "message": f"✅ Miniconda 安装完成\n路径: {install_dir}\nconda: {conda_bin}",
             "path": str(conda_bin),
         }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "message": "❌ 安装超时，可能是网络或磁盘问题\n请检查网络连接后重试",
+            "error_type": "timeout",
+        }
     except Exception as e:
-        return {"success": False, "message": f"安装失败: {e}"}
+        return {
+            "success": False,
+            "message": f"❌ 安装异常: {e}\n请检查网络连接和磁盘空间后重试",
+            "error_type": "unknown",
+        }
 
 
 # ============================================================

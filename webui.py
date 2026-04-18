@@ -771,20 +771,35 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
 
                     with gr.Column():
                         gr.Markdown("### 🛠️ 环境操作")
-                        env_model_type = gr.Dropdown(
-                            label="选择模型类型",
-                            choices=list(MODEL_REQUIREMENTS.keys()),
-                            interactive=True,
-                        )
-                        with gr.Row():
-                            env_create_btn = gr.Button("➕ 创建环境", variant="primary")
-                            env_reinstall_btn = gr.Button("🔄 重装依赖")
-                            env_remove_btn = gr.Button("🗑️ 删除环境", variant="stop")
-                        env_action_status = gr.Textbox(
-                            label="操作结果",
-                            lines=8,
-                            interactive=False,
-                        )
+
+                        # Miniconda 独立安装区域
+                        with gr.Group():
+                            gr.Markdown("#### Step 1: 安装 Miniconda")
+                            gr.Markdown("首次使用需先安装 Miniconda（约 100MB）")
+                            install_conda_btn = gr.Button("📦 安装 Miniconda", variant="primary")
+                            install_conda_status = gr.Textbox(
+                                label="安装状态",
+                                lines=6,
+                                interactive=False,
+                            )
+
+                        # 模型环境创建区域
+                        with gr.Group():
+                            gr.Markdown("#### Step 2: 创建模型环境")
+                            env_model_type = gr.Dropdown(
+                                label="选择模型类型",
+                                choices=list(MODEL_REQUIREMENTS.keys()),
+                                interactive=True,
+                            )
+                            with gr.Row():
+                                env_create_btn = gr.Button("➕ 创建环境", variant="primary")
+                                env_reinstall_btn = gr.Button("🔄 重装依赖")
+                                env_remove_btn = gr.Button("🗑️ 删除环境", variant="stop")
+                            env_action_status = gr.Textbox(
+                                label="操作结果",
+                                lines=8,
+                                interactive=False,
+                            )
 
                         gr.Markdown("### ⚡ 快速安装全部")
                         gr.Markdown("一键为所有模型创建环境（耗时较长）")
@@ -936,7 +951,7 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                 if not is_conda_available():
                     result = install_miniconda()
                     if not result["success"]:
-                        return f"❌ {result['message']}"
+                        return f"❌ {result['message']}\n\n💡 建议: 点击上方「安装 Miniconda」按钮手动安装"
 
                 msg = create_env(model_type)
                 return msg
@@ -947,6 +962,37 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             fn=env_create_handler,
             inputs=[env_model_type],
             outputs=[env_action_status],
+        )
+
+        # 独立的 Miniconda 安装按钮
+        def install_conda_handler():
+            if is_conda_available():
+                from env_manager import find_conda
+                return f"✅ conda 已安装\n路径: {find_conda()}"
+
+            def progress_cb(msg):
+                pass  # Gradio 不支持实时进度回调，用返回值展示
+
+            result = install_miniconda(progress_callback=progress_cb)
+
+            if result["success"]:
+                return result["message"]
+            else:
+                # 失败信息 + 重试提示
+                msg = result["message"]
+                error_type = result.get("error_type", "unknown")
+                if error_type == "download":
+                    msg += "\n\n🔄 可以点击按钮重试下载"
+                elif error_type == "install":
+                    msg += "\n\n🔄 可以点击按钮重试安装"
+                elif error_type == "timeout":
+                    msg += "\n\n🔄 网络恢复后点击按钮重试"
+                return msg
+
+        install_conda_btn.click(
+            fn=install_conda_handler,
+            inputs=[],
+            outputs=[install_conda_status],
         )
 
         def env_reinstall_handler(model_type):
