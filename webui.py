@@ -772,37 +772,38 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                     with gr.Column():
                         gr.Markdown("### 🛠️ 环境操作")
 
-                        # Miniconda 独立安装区域
-                        with gr.Group():
-                            gr.Markdown("#### Step 1: 安装 Miniconda")
-                            gr.Markdown("首次使用需先安装 Miniconda（约 100MB）")
+                        # Conda 状态（仅未安装时显示安装按钮）
+                        _conda_installed = is_conda_available()
+                        if not _conda_installed:
+                            gr.Markdown("⚠️ 未检测到 conda，请先安装")
                             install_conda_btn = gr.Button("📦 安装 Miniconda", variant="primary")
-                            install_conda_status = gr.Textbox(
-                                label="安装状态",
-                                lines=6,
-                                interactive=False,
-                            )
+                        else:
+                            install_conda_btn = gr.Button("📦 安装 Miniconda", visible=False)
+                        install_conda_status = gr.Textbox(
+                            label="",
+                            lines=3,
+                            interactive=False,
+                            visible=not _conda_installed,
+                        )
 
-                        # 模型环境创建区域
-                        with gr.Group():
-                            gr.Markdown("#### Step 2: 创建模型环境")
-                            env_model_type = gr.Dropdown(
-                                label="选择模型类型",
-                                choices=list(MODEL_REQUIREMENTS.keys()),
-                                interactive=True,
-                            )
-                            with gr.Row():
-                                env_create_btn = gr.Button("➕ 创建环境", variant="primary")
-                                env_reinstall_btn = gr.Button("🔄 重装依赖")
-                                env_remove_btn = gr.Button("🗑️ 删除环境", variant="stop")
-                            env_action_status = gr.Textbox(
-                                label="操作结果",
-                                lines=8,
-                                interactive=False,
-                            )
+                        # 模型环境管理
+                        gr.Markdown("### 模型环境")
+                        env_model_type = gr.Dropdown(
+                            label="选择模型类型",
+                            choices=list(MODEL_REQUIREMENTS.keys()),
+                            interactive=True,
+                        )
+                        with gr.Row():
+                            env_create_btn = gr.Button("➕ 创建环境", variant="primary")
+                            env_reinstall_btn = gr.Button("🔄 重装依赖")
+                            env_remove_btn = gr.Button("🗑️ 删除环境", variant="stop")
+                        env_action_status = gr.Textbox(
+                            label="操作结果",
+                            lines=8,
+                            interactive=False,
+                        )
 
                         gr.Markdown("### ⚡ 快速安装全部")
-                        gr.Markdown("一键为所有模型创建环境（耗时较长）")
                         env_install_all_btn = gr.Button("🚀 安装全部环境", variant="primary")
                         env_install_all_status = gr.Textbox(
                             label="安装进度",
