@@ -449,6 +449,39 @@ def run_in_env(model_type: str, script: str, args: list = None) -> subprocess.Co
                 )
 
 
+# 共享依赖安装缓存（避免重复检查）
+_ensured_envs: set = set()
+
+
+def _ensure_shared_deps(model_type: str):
+    """确保共享依赖已在环境中安装（惰性检查，每个环境只检查一次）"""
+    if model_type in _ensured_envs:
+        return
+    _ensured_envs.add(model_type)
+
+    python = get_env_python(model_type)
+    if not python:
+        return
+
+    # 快速检查 numpy 是否可用（最常缺失的依赖）
+    check = subprocess.run(
+        [python, "-c", "import numpy, soundfile"],
+        capture_output=True, text=True, timeout=15,
+        creationflags=_CREATE_FLAGS,
+    )
+    if check.returncode == 0:
+        return
+
+    # 缺失则安装共享依赖
+    pip = get_env_pip(model_type)
+    if pip:
+        subprocess.run(
+            pip + ["install", "--quiet"] + SHARED_REQUIREMENTS,
+            capture_output=True, text=True, timeout=300,
+            creationflags=_CREATE_FLAGS,
+        )
+
+
 def run_code_in_env(model_type: str, code: str) -> tuple:
     """在 conda 环境中执行 Python 代码
 
@@ -458,6 +491,8 @@ def run_code_in_env(model_type: str, code: str) -> tuple:
     python = get_env_python(model_type)
     if not python:
         return "", f"环境不存在: {model_type}", 1
+
+    _ensure_shared_deps(model_type)
 
     result = subprocess.run(
         [python, "-c", code],
