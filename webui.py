@@ -315,12 +315,13 @@ def load_model_handler(model_dir: str, selection: str, device: str) -> str:
     if is_conda_available() and env_exists(model_type):
         # 用 conda 环境的 Python 验证模型是否可以加载
         check_code = f"""
-import sys
+import sys, torch
 sys.path.insert(0, '{Path(__file__).parent.as_posix()}')
 from core.registry import get_adapter
 adapter = get_adapter('{model_type}')
 if adapter:
-    adapter.load_model('{Path(target["path"]).as_posix()}', device='{device}')
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    adapter.load_model('{Path(target["path"]).as_posix()}', device=device)
     print('LOAD_OK')
 else:
     print('LOAD_FAIL: adapter not found')
@@ -423,7 +424,9 @@ if not target_path:
     print('ERROR: no model found')
     sys.exit(1)
 
-adapter.load_model(target_path, device='cuda')
+import torch
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+adapter.load_model(target_path, device=device)
 request = TTSRequest(
     text={repr(text)},
     speaker={repr(speaker) if speaker else None},
