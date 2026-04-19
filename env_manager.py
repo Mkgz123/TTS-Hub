@@ -482,8 +482,13 @@ def _ensure_shared_deps(model_type: str):
         )
 
 
-def run_code_in_env(model_type: str, code: str) -> tuple:
+def run_code_in_env(model_type: str, code: str, timeout: int = 300) -> tuple:
     """在 conda 环境中执行 Python 代码
+
+    Args:
+        model_type: 模型类型
+        code: 要执行的 Python 代码
+        timeout: 超时秒数（默认 300，首次加载模型可能更久）
 
     Returns:
         (stdout: str, stderr: str, returncode: int)
@@ -496,7 +501,7 @@ def run_code_in_env(model_type: str, code: str) -> tuple:
 
     result = subprocess.run(
         [python, "-c", code],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True, text=True, timeout=timeout,
         creationflags=_CREATE_FLAGS,
     )
     return result.stdout, result.stderr, result.returncode
