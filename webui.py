@@ -26,6 +26,25 @@ from env_manager import (
     run_code_in_env, get_env_pip, MODEL_REQUIREMENTS, startup_check,
 )
 
+def _clean_stderr(stderr: str, max_chars: int = 800) -> str:
+    """过滤 stderr 中的 Warning/Deprecation 行，保留真正的错误信息"""
+    if not stderr:
+        return ""
+    skip_keywords = ("FutureWarning", "DeprecationWarning", "UserWarning",
+                     "WARNING:", "warning:", "DeprecationWarning",
+                     "You are using a", "please upgrade", "end of life")
+    lines = stderr.split("\n")
+    kept = []
+    for line in lines:
+        if any(kw in line for kw in skip_keywords):
+            continue
+        kept.append(line)
+    result = "\n".join(kept).strip()
+    if not result:
+        # 过滤后为空，返回原始 stderr（截断）
+        return stderr[:max_chars]
+    return result[:max_chars]
+
 DEFAULT_MODEL_DIR = os.environ.get("TTS_HUB_MODEL_DIR", (Path(__file__).parent / "models").as_posix())
 REFERENCE_AUDIO_DIR = str(Path(__file__).parent / "reference_audios")
 
@@ -317,7 +336,7 @@ else:
                     result = f"📦 环境:\n{env_status}\n\n{result}"
                 return result
             else:
-                err_msg = stderr[:300] if stderr else stdout[:300]
+                err_msg = _clean_stderr(stderr) if stderr else stdout[:500]
                 result = f"❌ 加载失败 (conda环境):\n{err_msg}"
                 if env_status:
                     result = f"📦 环境:\n{env_status}\n\n{result}"
@@ -422,7 +441,7 @@ print('SYNTH_OK')
                 duration = len(data) / sr
                 info = f"✅ 合成完成 (conda环境) | 时长: {duration:.2f}s | 采样率: {sr}Hz"
                 return output_path, info
-        return None, f"❌ 合成失败:\n{stderr[:300]}"
+        return None, f"❌ 合成失败 (rc={rc}):\n{_clean_stderr(stderr)}"
     except Exception as e:
         return None, f"❌ 合成异常: {e}"
 
