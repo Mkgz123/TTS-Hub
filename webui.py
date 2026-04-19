@@ -26,7 +26,7 @@ from env_manager import (
     run_code_in_env, get_env_pip, MODEL_REQUIREMENTS, startup_check,
 )
 
-DEFAULT_MODEL_DIR = os.environ.get("TTS_HUB_MODEL_DIR", str(Path(__file__).parent / "models"))
+DEFAULT_MODEL_DIR = os.environ.get("TTS_HUB_MODEL_DIR", (Path(__file__).parent / "models").as_posix())
 REFERENCE_AUDIO_DIR = str(Path(__file__).parent / "reference_audios")
 
 # 支持的参考音频格式
