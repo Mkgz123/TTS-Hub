@@ -296,7 +296,7 @@ def load_model_handler(model_dir: str, selection: str, device: str) -> str:
         # 用 conda 环境的 Python 验证模型是否可以加载
         check_code = f"""
 import sys
-sys.path.insert(0, '{str(Path(__file__).parent)}')
+sys.path.insert(0, '{Path(__file__).parent.as_posix()}')
 from core.registry import get_adapter
 adapter = get_adapter('{model_type}')
 if adapter:
@@ -379,7 +379,7 @@ def _synthesize_via_conda(text, speaker, language, speed, model_type):
 
     code = f"""
 import sys, json, base64, tempfile
-sys.path.insert(0, '{str(Path(__file__).parent)}')
+sys.path.insert(0, '{Path(__file__).parent.as_posix()}')
 
 from core.registry import get_adapter
 from core.adapter_base import TTSRequest
