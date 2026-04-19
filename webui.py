@@ -300,7 +300,7 @@ sys.path.insert(0, '{Path(__file__).parent.as_posix()}')
 from core.registry import get_adapter
 adapter = get_adapter('{model_type}')
 if adapter:
-    adapter.load_model('{target["path"]}', device='{device}')
+    adapter.load_model('{Path(target["path"]).as_posix()}', device='{device}')
     print('LOAD_OK')
 else:
     print('LOAD_FAIL: adapter not found')
@@ -374,7 +374,7 @@ def _synthesize_via_conda(text, speaker, language, speed, model_type):
 
     # 创建临时输出文件
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    output_path = tmp.name
+    output_path = Path(tmp.name).as_posix()
     tmp.close()
 
     code = f"""
