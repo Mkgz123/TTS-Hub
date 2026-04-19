@@ -26,25 +26,47 @@ from env_manager import (
     run_code_in_env, get_env_pip, MODEL_REQUIREMENTS, startup_check,
 )
 
-def _clean_stderr(stderr: str, max_chars: int = 800) -> str:
-    """过滤 stderr 中的 Warning/Deprecation 行，保留真正的错误信息"""
+def _clean_stderr(stderr: str, max_chars: int = 1500) -> str:
+    """保留 stderr 中真正的错误信息：Traceback、Error 行 + 末尾关键内容"""
     if not stderr:
         return ""
+
+    # 始终保留的关键词（真正的错误）
+    keep_keywords = ("Traceback", "Error:", "Exception", "error:", "File \"",
+                     "NotImplementedError", "RuntimeError", "ValueError",
+                     "ImportError", "ModuleNotFound", "FileNotFound",
+                     "OSError", "TypeError", "KeyError", "CUDA")
+
+    # 过滤掉的噪音
     skip_keywords = ("FutureWarning", "DeprecationWarning", "UserWarning",
-                     "RuntimeWarning", "WARNING:", "warning:",
+                     "RuntimeWarning", "WARNING:", "torch_dtype",
+                     "HF_TOKEN", "unauthenticated", "rate limit",
+                     "Loading weights:", "Using `chunk_length_s`",
                      "You are using a", "please upgrade", "end of life",
-                     "Couldn't find ffmpeg", "defaulting to ffmpeg")
+                     "Couldn't find ffmpeg", "defaulting to ffmpeg",
+                     "experimental with seq2seq", "caveats")
+
     lines = stderr.split("\n")
     kept = []
     for line in lines:
-        if any(kw in line for kw in skip_keywords):
+        stripped = line.strip()
+        if not stripped:
             continue
-        kept.append(line)
-    result = "\n".join(kept).strip()
-    if not result:
-        # 过滤后为空，返回原始 stderr（截断）
-        return stderr[:max_chars]
-    return result[:max_chars]
+        # 进度条行（含 %| 和 it/s）
+        if "%|" in stripped and "it/s" in stripped:
+            continue
+        if any(kw in stripped for kw in skip_keywords):
+            continue
+        kept.append(stripped)
+
+    if not kept:
+        return stderr[-max_chars:]
+
+    result = "\n".join(kept)
+    # 如果太长，优先保留末尾（错误信息通常在最后）
+    if len(result) > max_chars:
+        result = "...\n" + result[-max_chars:]
+    return result
 
 DEFAULT_MODEL_DIR = os.environ.get("TTS_HUB_MODEL_DIR", (Path(__file__).parent / "models").as_posix())
 REFERENCE_AUDIO_DIR = str(Path(__file__).parent / "reference_audios")
