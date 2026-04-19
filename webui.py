@@ -451,7 +451,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 adapter.load_model(target_path, device=device)
 request = TTSRequest(
     text={repr(text)},
-    speaker={repr(speaker) if speaker else None},
+    speaker={repr(speaker) if speaker else 'None'},
     language='{language}',
     speed={speed},
 )

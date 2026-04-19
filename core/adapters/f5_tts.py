@@ -68,8 +68,12 @@ class F5TTSAdapter(BaseTTSAdapter):
         ref_text = request.extra.get("ref_text", "")
         
         # 如果提供了 speaker 且看起来像文件路径，用作参考音频
-        if request.speaker and Path(request.speaker).exists():
-            ref_audio = request.speaker
+        # 去掉可能的外层引号（repr() 嵌入 f-string 时会产生）
+        ref_path = request.speaker
+        if ref_path and len(ref_path) >= 2 and ref_path[0] == "'" and ref_path[-1] == "'":
+            ref_path = ref_path[1:-1]
+        if ref_path and Path(ref_path).exists():
+            ref_audio = ref_path
 
         # 调用 F5-TTS 推理
         # 注意: 返回值可能是 (audio, sr) 或 (audio, sr, spectogram)
