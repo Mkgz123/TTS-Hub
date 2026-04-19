@@ -31,8 +31,9 @@ def _clean_stderr(stderr: str, max_chars: int = 800) -> str:
     if not stderr:
         return ""
     skip_keywords = ("FutureWarning", "DeprecationWarning", "UserWarning",
-                     "WARNING:", "warning:", "DeprecationWarning",
-                     "You are using a", "please upgrade", "end of life")
+                     "RuntimeWarning", "WARNING:", "warning:",
+                     "You are using a", "please upgrade", "end of life",
+                     "Couldn't find ffmpeg", "defaulting to ffmpeg")
     lines = stderr.split("\n")
     kept = []
     for line in lines:

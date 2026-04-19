@@ -17,17 +17,41 @@ class F5TTSAdapter(BaseTTSAdapter):
         
         try:
             from f5_tts.api import F5TTS
-            self._model = F5TTS(
-                model=str(self._model_path),
-                device=device,
-            )
         except ImportError:
             self._needs_package = True
+            return
+        
+        # 查找 checkpoint 文件
+        ckpt_file = ""
+        for pattern in ["*.safetensors", "*.pt", "*.pth", "*.ckpt"]:
+            found = list(self._model_path.glob(pattern))
+            if found:
+                ckpt_file = str(found[0])
+                break
+        
+        # 查找 vocab 文件
+        vocab_file = ""
+        vocab_found = list(self._model_path.glob("*.txt")) + list(self._model_path.glob("*.json"))
+        for vf in vocab_found:
+            if "vocab" in vf.name.lower():
+                vocab_file = str(vf)
+                break
+        
+        # 查找模型配置文件 (YAML)
+        model_name = "F5TTS_v1_Base"  # 默认
+        yaml_found = list(self._model_path.glob("*.yaml")) + list(self._model_path.glob("*.yml"))
+        if yaml_found:
+            # 用找到的 yaml 文件名（不含扩展名）作为 model 配置名
+            model_name = yaml_found[0].stem
+        
+        try:
+            self._model = F5TTS(
+                model=model_name,
+                ckpt_file=ckpt_file,
+                vocab_file=vocab_file,
+                device=device,
+            )
         except Exception as e:
-            # 检查模型文件是否存在
-            model_files = list(self._model_path.glob("*.pt")) + list(self._model_path.glob("*.safetensors"))
-            if not model_files:
-                raise FileNotFoundError(f"未找到模型文件: {model_path}")
             raise RuntimeError(f"加载 F5-TTS 模型失败: {e}")
 
     def synthesize(self, request: TTSRequest) -> TTSResponse:
