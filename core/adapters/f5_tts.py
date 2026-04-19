@@ -21,6 +21,16 @@ class F5TTSAdapter(BaseTTSAdapter):
             self._needs_package = True
             return
         
+        # 确保 ffmpeg 可用（imageio-ffmpeg 自带二进制）
+        try:
+            import imageio_ffmpeg
+            ffmpeg_bin = str(Path(imageio_ffmpeg.get_ffmpeg_exe()).parent)
+            import os
+            if ffmpeg_bin not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = ffmpeg_bin + os.pathsep + os.environ.get("PATH", "")
+        except ImportError:
+            pass
+        
         # 查找 checkpoint 文件
         ckpt_file = ""
         for pattern in ["*.safetensors", "*.pt", "*.pth", "*.ckpt"]:
