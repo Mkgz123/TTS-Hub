@@ -63,6 +63,7 @@ MODEL_REQUIREMENTS = {
         "pip": [
             "transformers", "safetensors", "PyYAML",
         ],
+        "post_install": "git clone --depth 1 https://github.com/OpenMOSS/MOSS-TTS {env_dir}/MOSS-TTS",
     },
     "gpt-sovits": {
         "python": "3.10",

@@ -46,6 +46,8 @@ class MossttsAdapter(BaseTTSAdapter):
                 Path.home() / "moss-tts",
                 Path("/opt/MOSS-TTS"),
                 Path("./MOSS-TTS"),
+                # 添加 envs 目录下的路径（post_install 克隆的位置）
+                Path(__file__).parent.parent.parent / "envs" / "moss-tts" / "MOSS-TTS",
             ]
             for p in possible_paths:
                 if p.exists() and str(p) not in sys.path:

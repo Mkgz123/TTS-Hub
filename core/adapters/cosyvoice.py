@@ -45,6 +45,8 @@ class CosyVoiceAdapter(BaseTTSAdapter):
                 Path.home() / "CosyVoice",
                 Path("/opt/CosyVoice"),
                 Path("./CosyVoice"),
+                # 添加 envs 目录下的路径（post_install 克隆的位置）
+                Path(__file__).parent.parent.parent / "envs" / "cosyvoice" / "CosyVoice",
             ]
             for p in possible_paths:
                 if p.exists() and str(p) not in sys.path:

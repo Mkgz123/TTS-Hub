@@ -35,6 +35,8 @@ class GPTSoVITSAdapter(BaseTTSAdapter):
             Path.home() / "GPT-SoVITS",
             Path("/opt/GPT-SoVITS"),
             Path("./GPT-SoVITS"),
+            # 添加 envs 目录下的路径（post_install 克隆的位置）
+            Path(__file__).parent.parent.parent / "envs" / "gpt-sovits" / "GPT-SoVITS",
         ]:
             if candidate.exists() and str(candidate) not in sys.path:
                 sys.path.insert(0, str(candidate))
