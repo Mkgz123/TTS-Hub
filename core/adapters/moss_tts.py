@@ -148,7 +148,7 @@ class MossttsAdapter(BaseTTSAdapter):
         self._load_config(config_path)
         
         # 尝试导入 MOSS-TTS 包
-        if self._import_moss_tts():
+        if self._import_moss_tts() and self._moss_tts_class is not None:
             try:
                 self._model = self._moss_tts_class(
                     config=config_path,
