@@ -27,7 +27,7 @@ MODEL_REQUIREMENTS = {
     },
     "f5-tts": {
         "python": "3.10",
-        "conda": [],
+        "conda": ["ffmpeg"],
         "pip": ["f5-tts", "imageio-ffmpeg"],
     },
     "chattts": {
