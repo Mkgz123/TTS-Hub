@@ -251,6 +251,164 @@ def get_env_python(model_type: str) -> Optional[str]:
     return None
 
 
+# 环境创建步骤定义
+_CREATE_STEPS = [
+    ("创建 conda 环境", "🐍"),
+    ("安装 conda 依赖", "📦"),
+    ("安装 PyTorch", "🔥"),
+    ("安装 pip 依赖", "📚"),
+    ("执行后置安装", "🔧"),
+]
+
+
+def _run_cmd_stream(cmd, timeout=600):
+    """运行命令并实时 yield 输出行"""
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+        creationflags=_CREATE_FLAGS,
+    )
+    try:
+        for line in proc.stdout:
+            yield line.rstrip()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        yield "[超时] 命令执行超时"
+    return proc.returncode
+
+
+def create_env_stream(model_type: str):
+    """创建 conda 环境（生成器版本，实时 yield 进度）
+
+    Yields:
+        dict: {
+            "step": int,        # 当前步骤 (1-based)
+            "total": int,       # 总步骤数
+            "icon": str,        # 步骤图标
+            "phase": str,       # 步骤名称
+            "line": str,        # 本次更新的文本行
+            "done": bool,       # 是否全部完成
+            "success": bool,    # 是否成功 (仅 done=True 时有效)
+        }
+    """
+    conda = find_conda()
+    if not conda:
+        yield {"step": 0, "total": 5, "icon": "❌", "phase": "错误",
+               "line": "conda 未安装，请先安装 Miniconda/Anaconda", "done": True, "success": False}
+        return
+
+    _accept_conda_tos(conda)
+    req = MODEL_REQUIREMENTS.get(model_type, {})
+    python_ver = req.get("python", "3.10")
+    env_name = get_conda_env_name(model_type)
+    total = len(_CREATE_STEPS)
+
+    # --- Step 1: 创建 conda 环境 ---
+    phase, icon = _CREATE_STEPS[0]
+    yield {"step": 1, "total": total, "icon": icon, "phase": phase,
+           "line": f"{icon} 创建 conda 环境: {env_name} (Python {python_ver})", "done": False, "success": False}
+
+    cmd = [conda, "create", "-n", env_name, f"python={python_ver}", "-y", "-q"]
+    for line in _run_cmd_stream(cmd):
+        yield {"step": 1, "total": total, "icon": icon, "phase": phase,
+               "line": f"  {line}", "done": False, "success": False}
+
+    # 检查环境是否创建成功
+    if not env_exists(model_type):
+        yield {"step": 1, "total": total, "icon": "❌", "phase": phase,
+               "line": f"❌ 环境创建失败: {env_name}", "done": True, "success": False}
+        return
+    yield {"step": 1, "total": total, "icon": "✅", "phase": phase,
+           "line": f"✅ 环境创建完成", "done": False, "success": False}
+
+    # --- Step 2: conda 依赖 ---
+    conda_deps = req.get("conda", [])
+    phase, icon = _CREATE_STEPS[1]
+    if conda_deps:
+        conda_channels = req.get("conda_channel", [])
+        channel_args = []
+        for ch in conda_channels:
+            channel_args.extend(["-c", ch])
+        yield {"step": 2, "total": total, "icon": icon, "phase": phase,
+               "line": f"{icon} 安装 conda 依赖: {', '.join(conda_deps)}", "done": False, "success": False}
+        cmd = [conda, "install", "-n", env_name] + channel_args + conda_deps + ["-y", "-q"]
+        for line in _run_cmd_stream(cmd):
+            yield {"step": 2, "total": total, "icon": icon, "phase": phase,
+                   "line": f"  {line}", "done": False, "success": False}
+        yield {"step": 2, "total": total, "icon": "✅", "phase": phase,
+               "line": f"✅ conda 依赖安装完成", "done": False, "success": False}
+    else:
+        yield {"step": 2, "total": total, "icon": "⏭️", "phase": phase,
+               "line": f"⏭️ 无 conda 依赖，跳过", "done": False, "success": False}
+
+    # --- Step 3: PyTorch ---
+    pip_cuda_deps = req.get("pip_cuda", [])
+    phase, icon = _CREATE_STEPS[2]
+    pip_cmd = get_env_pip(model_type)
+    if pip_cuda_deps and pip_cmd:
+        has_gpu = _has_nvidia_gpu()
+        if has_gpu:
+            torch_index = _PIP_TORCH_CUDA_INDEX
+            label = "CUDA"
+        else:
+            torch_index = _PIP_TORCH_CPU_INDEX
+            label = "CPU"
+        yield {"step": 3, "total": total, "icon": icon, "phase": phase,
+               "line": f"{icon} 安装 PyTorch ({label}): {', '.join(pip_cuda_deps)}", "done": False, "success": False}
+        cmd = pip_cmd + ["install", "--index-url", torch_index] + pip_cuda_deps
+        for line in _run_cmd_stream(cmd):
+            yield {"step": 3, "total": total, "icon": icon, "phase": phase,
+                   "line": f"  {line}", "done": False, "success": False}
+        yield {"step": 3, "total": total, "icon": "✅", "phase": phase,
+               "line": f"✅ PyTorch ({label}) 安装完成", "done": False, "success": False}
+    else:
+        yield {"step": 3, "total": total, "icon": "⏭️", "phase": phase,
+               "line": f"⏭️ 无 PyTorch 特殊依赖，跳过", "done": False, "success": False}
+
+    # --- Step 4: pip 依赖 ---
+    pip_deps = req.get("pip", [])
+    all_pip = SHARED_REQUIREMENTS + pip_deps
+    phase, icon = _CREATE_STEPS[3]
+    if all_pip and pip_cmd:
+        yield {"step": 4, "total": total, "icon": icon, "phase": phase,
+               "line": f"{icon} 安装 pip 依赖 ({len(all_pip)} 个包): {', '.join(all_pip[:5])}{'...' if len(all_pip) > 5 else ''}",
+               "done": False, "success": False}
+        cmd = pip_cmd + ["install"] + all_pip
+        for line in _run_cmd_stream(cmd):
+            yield {"step": 4, "total": total, "icon": icon, "phase": phase,
+                   "line": f"  {line}", "done": False, "success": False}
+        yield {"step": 4, "total": total, "icon": "✅", "phase": phase,
+               "line": f"✅ pip 依赖安装完成 ({len(all_pip)} 个包)", "done": False, "success": False}
+    else:
+        yield {"step": 4, "total": total, "icon": "⏭️", "phase": phase,
+               "line": f"⏭️ 无 pip 依赖，跳过", "done": False, "success": False}
+
+    # --- Step 5: 后置安装 ---
+    post_install = req.get("post_install")
+    phase, icon = _CREATE_STEPS[4]
+    if post_install:
+        yield {"step": 5, "total": total, "icon": icon, "phase": phase,
+               "line": f"{icon} 执行后置安装...", "done": False, "success": False}
+        pip_str = " ".join(pip_cmd) if pip_cmd else "pip"
+        post_cmd = post_install.format(
+            env_dir=str(get_env_path(model_type)),
+            pip=pip_str,
+        )
+        for line in _run_cmd_stream(post_cmd.split() if "&&" not in post_cmd else ["bash", "-c", post_cmd]):
+            yield {"step": 5, "total": total, "icon": icon, "phase": phase,
+                   "line": f"  {line}", "done": False, "success": False}
+        yield {"step": 5, "total": total, "icon": "✅", "phase": phase,
+               "line": f"✅ 后置安装完成", "done": False, "success": False}
+    else:
+        yield {"step": 5, "total": total, "icon": "⏭️", "phase": phase,
+               "line": f"⏭️ 无后置安装步骤", "done": False, "success": False}
+
+    # 完成
+    yield {"step": total, "total": total, "icon": "🎉", "phase": "完成",
+           "line": f"\n🎉 环境创建完成: {env_name}", "done": True, "success": True}
+
+
 def create_env(model_type: str, progress_callback=None) -> str:
     """创建 conda 环境
 

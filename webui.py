@@ -21,7 +21,8 @@ from core.registry import get_adapter, list_adapters, is_supported
 from core.adapter_base import TTSRequest
 from core.download_manager import DownloadManager, KNOWN_MODELS
 from env_manager import (
-    install_miniconda, create_env, install_model_deps, env_exists,
+    install_miniconda, create_env, create_env_stream, _run_cmd_stream,
+    install_model_deps, env_exists,
     get_env_python, list_envs, remove_env, is_conda_available,
     run_code_in_env, get_env_pip, MODEL_REQUIREMENTS, startup_check,
 )
@@ -842,10 +843,12 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                             env_create_btn = gr.Button("➕ 创建环境", variant="primary")
                             env_reinstall_btn = gr.Button("🔄 重装依赖")
                             env_remove_btn = gr.Button("🗑️ 删除环境", variant="stop")
-                        env_action_status = gr.Textbox(
-                            label="操作结果",
-                            lines=8,
+                        env_action_log = gr.Textbox(
+                            label="操作日志",
+                            value="",
+                            lines=18,
                             interactive=False,
+                            max_lines=30,
                         )
 
                         gr.Markdown("### ⚡ 快速安装全部")
@@ -989,25 +992,49 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             outputs=[conda_status_display, env_list_display],
         )
 
-        def env_create_handler(model_type):
+        def env_create_handler(model_type, progress=gr.Progress(track_tqdm=True)):
             if not model_type:
-                return "❌ 请选择模型类型"
+                yield "❌ 请选择模型类型"
+                return
             try:
                 # 先确保 conda 可用
                 if not is_conda_available():
+                    yield "📦 conda 未安装，正在自动安装 Miniconda..."
                     result = install_miniconda()
                     if not result["success"]:
-                        return f"❌ {result['message']}\n\n💡 建议: 点击上方「安装 Miniconda」按钮手动安装"
+                        yield f"❌ {result['message']}\n\n💡 建议: 点击上方「安装 Miniconda」按钮手动安装"
+                        return
+                    yield f"✅ Miniconda 安装完成\n\n---\n"
 
-                msg = create_env(model_type)
-                return msg
+                # 检查是否已存在
+                if env_exists(model_type):
+                    yield f"⏭️ 环境 ttshub-{model_type} 已存在，无需重复创建"
+                    return
+
+                # 使用流式创建
+                log_lines = []
+                for update in create_env_stream(model_type):
+                    log_lines.append(update["line"])
+                    # 构建进度条描述
+                    step = update["step"]
+                    total = update["total"]
+                    pct = step / total if total > 0 else 0
+                    progress(pct, desc=f"{update['icon']} [{step}/{total}] {update['phase']}")
+
+                    # 实时输出日志（保留最近 40 行）
+                    display = log_lines[-40:]
+                    yield "\n".join(display)
+
+                    if update["done"]:
+                        return
+
             except Exception as e:
-                return f"❌ 创建失败: {e}"
+                yield f"❌ 创建失败: {e}"
 
         env_create_btn.click(
             fn=env_create_handler,
             inputs=[env_model_type],
-            outputs=[env_action_status],
+            outputs=[env_action_log],
         )
 
         # 独立的 Miniconda 安装按钮
@@ -1025,19 +1052,78 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             outputs=[install_conda_status],
         )
 
-        def env_reinstall_handler(model_type):
+        def env_reinstall_handler(model_type, progress=gr.Progress(track_tqdm=True)):
             if not model_type:
-                return "❌ 请选择模型类型"
+                yield "❌ 请选择模型类型"
+                return
             try:
-                result = install_model_deps(model_type, upgrade=True)
-                return result["message"]
+                if not is_conda_available():
+                    yield "❌ conda 未安装"
+                    return
+                if not env_exists(model_type):
+                    # 环境不存在，走创建流程
+                    yield f"📦 环境不存在，将创建新环境...\n\n---\n"
+                    log_lines = []
+                    for update in create_env_stream(model_type):
+                        log_lines.append(update["line"])
+                        step, total = update["step"], update["total"]
+                        progress(step / total if total > 0 else 0,
+                                 desc=f"{update['icon']} [{step}/{total}] {update['phase']}")
+                        yield "\n".join(log_lines[-40:])
+                        if update["done"]:
+                            return
+                    return
+
+                # 环境存在，重新安装依赖
+                pip_cmd = get_env_pip(model_type)
+                if not pip_cmd:
+                    yield "❌ 找不到 pip"
+                    return
+
+                req = MODEL_REQUIREMENTS.get(model_type, {})
+                pip_cuda_deps = req.get("pip_cuda", [])
+                pip_deps = req.get("pip", [])
+                all_pip = SHARED_REQUIREMENTS + pip_deps
+                log_lines = []
+
+                # PyTorch
+                if pip_cuda_deps:
+                    has_gpu = _has_nvidia_gpu()
+                    torch_index = _PIP_TORCH_CUDA_INDEX if has_gpu else _PIP_TORCH_CPU_INDEX
+                    label = "CUDA" if has_gpu else "CPU"
+                    log_lines.append(f"🔥 升级 PyTorch ({label})...")
+                    yield "\n".join(log_lines)
+                    cmd = pip_cmd + ["install", "--upgrade", "--index-url", torch_index] + pip_cuda_deps
+                    for line in _run_cmd_stream(cmd):
+                        log_lines.append(f"  {line}")
+                        yield "\n".join(log_lines[-30:])
+                    log_lines.append(f"✅ PyTorch 升级完成")
+                    yield "\n".join(log_lines)
+
+                progress(0.5, desc="📚 安装 pip 依赖...")
+
+                # pip
+                if all_pip:
+                    log_lines.append(f"📚 安装 pip 依赖 ({len(all_pip)} 个包)...")
+                    yield "\n".join(log_lines)
+                    cmd = pip_cmd + ["install", "--upgrade"] + all_pip
+                    for line in _run_cmd_stream(cmd):
+                        log_lines.append(f"  {line}")
+                        yield "\n".join(log_lines[-30:])
+                    log_lines.append(f"✅ pip 依赖安装完成")
+                    yield "\n".join(log_lines)
+
+                progress(1.0, desc="✅ 完成")
+                log_lines.append(f"\n🎉 依赖重装完成: ttshub-{model_type}")
+                yield "\n".join(log_lines)
+
             except Exception as e:
-                return f"❌ 操作失败: {e}"
+                yield f"❌ 操作失败: {e}"
 
         env_reinstall_btn.click(
             fn=env_reinstall_handler,
             inputs=[env_model_type],
-            outputs=[env_action_status],
+            outputs=[env_action_log],
         )
 
         def env_remove_handler(model_type):
@@ -1052,34 +1138,56 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
         env_remove_btn.click(
             fn=env_remove_handler,
             inputs=[env_model_type],
-            outputs=[env_action_status],
+            outputs=[env_action_log],
         )
 
-        def env_install_all_handler():
-            """一键创建所有环境"""
+        def env_install_all_handler(progress=gr.Progress(track_tqdm=True)):
+            """一键创建所有环境（流式）"""
             if not is_conda_available():
+                yield "📦 conda 未安装，正在自动安装 Miniconda..."
                 result = install_miniconda()
                 if not result["success"]:
-                    return f"❌ {result['message']}"
+                    yield f"❌ {result['message']}"
+                    return
+                yield "✅ Miniconda 安装完成\n\n---\n"
 
-            results = []
-            for mtype in MODEL_REQUIREMENTS:
-                results.append(f"⏳ {mtype}...")
-                try:
-                    if env_exists(mtype):
-                        results[-1] = f"⏭️ {mtype}: 环境已存在，跳过"
-                    else:
-                        msg = create_env(mtype)
-                        results[-1] = f"✅ {mtype}: 创建完成"
-                except Exception as e:
-                    results[-1] = f"❌ {mtype}: {str(e)[:100]}"
+            total_models = len(MODEL_REQUIREMENTS)
+            log_lines = []
 
-            return "\n".join(results)
+            for i, mtype in enumerate(MODEL_REQUIREMENTS):
+                progress_pct = i / total_models
+                progress(progress_pct, desc=f"📦 [{i+1}/{total_models}] {mtype}")
+
+                if env_exists(mtype):
+                    log_lines.append(f"⏭️ {mtype}: 环境已存在，跳过")
+                    yield "\n".join(log_lines[-25:])
+                    continue
+
+                log_lines.append(f"\n{'='*40}")
+                log_lines.append(f"📦 [{i+1}/{total_models}] 创建环境: {mtype}")
+                log_lines.append(f"{'='*40}")
+                yield "\n".join(log_lines[-25:])
+
+                for update in create_env_stream(mtype):
+                    log_lines.append(update["line"])
+                    # 嵌套进度：外层是模型计数，内层是当前模型步骤
+                    inner_pct = update["step"] / update["total"] if update["total"] > 0 else 0
+                    sub_pct = (i + inner_pct) / total_models
+                    progress(sub_pct, desc=f"📦 [{i+1}/{total_models}] {mtype}: {update['phase']}")
+                    yield "\n".join(log_lines[-25:])
+
+                    if update["done"] and not update["success"]:
+                        log_lines.append(f"❌ {mtype} 创建失败")
+                        break
+
+            progress(1.0, desc="🎉 全部完成")
+            log_lines.append(f"\n🎉 全部环境处理完成")
+            yield "\n".join(log_lines[-30:])
 
         env_install_all_btn.click(
             fn=env_install_all_handler,
             inputs=[],
-            outputs=[env_install_all_status],
+            outputs=[env_action_log],
         )
 
     return demo
