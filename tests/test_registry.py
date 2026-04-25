@@ -38,8 +38,7 @@ class TestRegistry:
 
     def test_is_supported_known_types(self):
         from core.registry import is_supported
-        known = ["fish-speech", "f5-tts", "chattts", "cosyvoice",
-                 "kokoro", "xtts", "moss-tts", "moss-tts-nano", "gpt-sovits"]
+        known = ["moss-tts", "moss-tts-nano"]
         for mt in known:
             assert is_supported(mt), f"{mt} 应该被支持"
 
@@ -77,55 +76,12 @@ class TestDetector:
         mt = self._model_type(result)
         assert mt in (None, "unknown"), f"不存在的目录应返回 None 或 unknown，实际: {mt}"
 
-    def test_detect_cosyvoice_by_config(self, tmp_path):
-        """config.json 中 model_type=cosyvoice 应被识别"""
-        config = {"model_type": "cosyvoice", "hidden_size": 512}
-        (tmp_path / "config.json").write_text(json.dumps(config))
-        from core.detector import detect_model_type
-        result = detect_model_type(str(tmp_path))
-        assert self._model_type(result) == "cosyvoice"
-
-    def test_detect_f5_tts_by_config(self, tmp_path):
-        config = {"model_type": "f5_tts"}
-        (tmp_path / "config.json").write_text(json.dumps(config))
-        from core.detector import detect_model_type
-        result = detect_model_type(str(tmp_path))
-        assert self._model_type(result) == "f5-tts"
-
-    def test_detect_xtts_by_config(self, tmp_path):
-        config = {"model_type": "xtts"}
-        (tmp_path / "config.json").write_text(json.dumps(config))
-        from core.detector import detect_model_type
-        result = detect_model_type(str(tmp_path))
-        assert self._model_type(result) == "xtts"
-
-    def test_detect_by_fingerprint_chattts(self, tmp_path):
-        """ChatTTS 文件指纹识别"""
-        (tmp_path / "asset.zip").touch()
-        (tmp_path / "DVAE_full.pt").touch()
-        (tmp_path / "asset").mkdir()
-        from core.detector import detect_model_type
-        result = detect_model_type(str(tmp_path))
-        assert self._model_type(result) == "chattts"
-
     def test_detect_by_fingerprint_moss(self, tmp_path):
         (tmp_path / "semantic_codec.pth").touch()
         (tmp_path / "acoustic_codec.pth").touch()
         from core.detector import detect_model_type
         result = detect_model_type(str(tmp_path))
         assert self._model_type(result) == "moss-tts"
-
-    def test_detect_by_fingerprint_kokoro_onnx(self, tmp_path):
-        (tmp_path / "kokoro_v0_19.onnx").touch()
-        from core.detector import detect_model_type
-        result = detect_model_type(str(tmp_path))
-        assert self._model_type(result) == "kokoro"
-
-    def test_detect_by_fingerprint_cosyvoice(self, tmp_path):
-        (tmp_path / "cosyvoice.yaml").touch()
-        from core.detector import detect_model_type
-        result = detect_model_type(str(tmp_path))
-        assert self._model_type(result) == "cosyvoice"
 
     def test_detect_invalid_json_config(self, tmp_path):
         """config.json 格式错误时应不崩溃，返回 unknown"""
@@ -135,17 +91,9 @@ class TestDetector:
         mt = self._model_type(result)
         assert mt in (None, "unknown"), f"格式错误应返回 None 或 unknown，实际: {mt}"
 
-    def test_detect_by_architecture_qwen2(self, tmp_path):
-        """architectures 含 Qwen2 时应识别为 fish-speech"""
-        config = {"architectures": ["Qwen2ForCausalLM"]}
-        (tmp_path / "config.json").write_text(json.dumps(config))
-        from core.detector import detect_model_type
-        result = detect_model_type(str(tmp_path))
-        assert self._model_type(result) == "fish-speech"
-
     def test_detect_result_has_confidence(self, tmp_path):
         """检测结果应包含 confidence 字段"""
-        config = {"model_type": "cosyvoice"}
+        config = {"model_type": "moss_tts_delay"}
         (tmp_path / "config.json").write_text(json.dumps(config))
         from core.detector import detect_model_type
         result = detect_model_type(str(tmp_path))
@@ -154,7 +102,7 @@ class TestDetector:
 
     def test_detect_result_has_method(self, tmp_path):
         """检测结果应包含 method 字段"""
-        config = {"model_type": "xtts"}
+        config = {"model_type": "moss_tts_delay"}
         (tmp_path / "config.json").write_text(json.dumps(config))
         from core.detector import detect_model_type
         result = detect_model_type(str(tmp_path))

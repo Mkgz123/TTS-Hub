@@ -64,12 +64,5 @@ def is_supported(model_type: str) -> bool:
 # ============================================================
 
 # 延迟注册 — 只注册元信息，实际 import 在 get_adapter() 时发生
-register_adapter("fish-speech", "core.adapters.fish_speech", "FishSpeechAdapter")
-register_adapter("f5-tts", "core.adapters.f5_tts", "F5TTSAdapter")
-register_adapter("chattts", "core.adapters.chattts", "ChatTTSAdapter")
-register_adapter("cosyvoice", "core.adapters.cosyvoice", "CosyVoiceAdapter")
-register_adapter("kokoro", "core.adapters.kokoro", "KokoroAdapter")
-register_adapter("xtts", "core.adapters.xtts", "XTTSAdapter")
 register_adapter("moss-tts", "core.adapters.moss_tts", "MossttsAdapter")
 register_adapter("moss-tts-nano", "core.adapters.moss_tts_nano", "MossTTSNanoAdapter")
-register_adapter("gpt-sovits", "core.adapters.gpt_sovits", "GPTSoVITSAdapter")

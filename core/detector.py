@@ -11,48 +11,14 @@ from typing import Optional
 
 # 文件指纹 — 特征文件名 → 模型类型
 FILE_FINGERPRINTS = {
-    "fish-speech": [
-        {"files": ["codec.pth", "model.pth"], "dirs": []},
-        {"files": ["firefly-gan-vq-fsq-8x1024-21hz-generator.pth"], "dirs": []},
-    ],
-    "f5-tts": [
-        {"files": ["model_*.pt", "vocab.txt"], "dirs": []},
-        {"files": ["vae.pt"], "dirs": ["emilia"]},
-    ],
-    "chattts": [
-        {"files": ["asset.zip", "DVAE_full.pt"], "dirs": ["asset"]},
-        {"files": ["GPT_weights_v2.pt"], "dirs": []},
-    ],
-    "cosyvoice": [
-        {"files": ["cosyvoice.yaml"], "dirs": []},
-        {"files": ["llm.pt", "speech_tokenizer.pt"], "dirs": []},
-    ],
-    "kokoro": [
-        {"files": ["kokoro_v0_19.onnx"], "dirs": []},
-        {"files": ["kokoro-v1_0.pth"], "dirs": []},
-    ],
-    "xtts": [
-        {"files": ["model.pth", "config.json", "dvae.pth"], "dirs": []},
-        {"files": ["mel_stats.json", "dvae.pth"], "dirs": []},
-    ],
     "moss-tts": [
         {"files": ["semantic_codec.pth", "acoustic_codec.pth"], "dirs": []},
         {"files": ["moss.yaml"], "dirs": []},
-    ],
-    "gpt-sovits": [
-        {"files": ["GPT_SoVITS/pretrained_models"], "dirs": ["GPT_SoVITS"]},
     ],
 }
 
 # config.json 中的 model_type 直接映射
 CONFIG_MODEL_TYPE_MAP = {
-    "cosyvoice": "cosyvoice",
-    "cosyvoice2": "cosyvoice",
-    "xtts": "xtts",
-    "kokoro": "kokoro",
-    "f5_tts": "f5-tts",
-    "fish_speech": "fish-speech",
-    "fish-speech": "fish-speech",
     "moss_tts_delay": "moss-tts",
     "moss_tts_nano": "moss-tts-nano",
     "moss-tts-nano": "moss-tts-nano",
@@ -60,10 +26,6 @@ CONFIG_MODEL_TYPE_MAP = {
 
 # architectures 字段关键词映射
 ARCH_KEYWORDS = {
-    "qwen2": "fish-speech",
-    "cosyvoice": "cosyvoice",
-    "xtts": "xtts",
-    "kokoro": "kokoro",
     "mossttsdelay": "moss-tts",
     "mossttsnano": "moss-tts-nano",
 }
@@ -168,22 +130,11 @@ def detect_model_type(model_dir: str) -> dict:
     # === 策略 3：目录名猜测 ===
     dir_name = model_path.name.lower()
     name_hints = {
-        "cosyvoice": "cosyvoice",
-        "fish-speech": "fish-speech",
-        "fish_speech": "fish-speech",
-        "f5-tts": "f5-tts",
-        "f5_tts": "f5-tts",
-        "chattts": "chattts",
-        "chat-tts": "chattts",
-        "kokoro": "kokoro",
-        "xtts": "xtts",
         "moss-ttsd": "moss-tts",
         "moss_ttsd": "moss-tts",
         "moss-tts-nano": "moss-tts-nano",
         "moss_tts_nano": "moss-tts-nano",
         "moss": "moss-tts",
-        "gpt-sovits": "gpt-sovits",
-        "gpt_sovits": "gpt-sovits",
     }
     for hint, mtype in name_hints.items():
         if hint in dir_name:

@@ -20,41 +20,6 @@ _CREATE_FLAGS = 0x08000000 if _IS_WIN else 0  # CREATE_NO_WINDOW for Windows
 # 模型 → conda/pip 依赖列表
 # pip_cuda: 需要从 PyTorch CUDA 专用源安装的包
 MODEL_REQUIREMENTS = {
-    "fish-speech": {
-        "python": "3.10",
-        "conda": [],
-        "pip": ["fish-speech"],
-    },
-    "f5-tts": {
-        "python": "3.10",
-        "conda": ["ffmpeg"],
-        "pip": ["f5-tts", "imageio-ffmpeg"],
-    },
-    "chattts": {
-        "python": "3.10",
-        "conda": [],
-        "pip_cuda": ["torch", "torchaudio"],
-        "pip": ["ChatTTS"],
-    },
-    "cosyvoice": {
-        "python": "3.10",
-        "conda": ["ffmpeg"],
-        "pip_cuda": ["torch>=2.0", "torchaudio"],
-        "pip": [
-            "transformers", "onnxruntime-gpu", "librosa", "soundfile",
-        ],
-        "post_install": "git clone --depth 1 https://github.com/FunAudioLLM/CosyVoice {env_dir}/CosyVoice && cd {env_dir}/CosyVoice && {pip} install -r requirements.txt",
-    },
-    "kokoro": {
-        "python": "3.10",
-        "conda": [],
-        "pip": ["kokoro-onnx"],
-    },
-    "xtts": {
-        "python": "3.10",
-        "conda": [],
-        "pip": ["TTS"],
-    },
     "moss-tts": {
         "python": "3.12",
         "conda": ["ffmpeg"],
@@ -66,20 +31,11 @@ MODEL_REQUIREMENTS = {
     "moss-tts-nano": {
         "python": "3.12",
         "conda": ["ffmpeg"],
-        "pip_cuda": ["torch>=2.0", "torchaudio"],
+        "pip_cuda": ["torch>=2.0", "torchaudio", "torchcodec"],
         "pip": [
             "transformers>=4.45", "safetensors", "accelerate", "soundfile",
             "sentencepiece",
         ],
-    },
-    "gpt-sovits": {
-        "python": "3.10",
-        "conda": ["ffmpeg"],
-        "pip_cuda": ["torch>=2.0", "torchaudio"],
-        "pip": [
-            "transformers", "gradio", "cn2an", "pypinyin", "langid",
-        ],
-        "post_install": "git clone --depth 1 https://github.com/RVC-Boss/GPT-SoVITS {env_dir}/GPT-SoVITS && cd {env_dir}/GPT-SoVITS && {pip} install -r requirements.txt",
     },
 }
 

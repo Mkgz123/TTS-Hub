@@ -12,39 +12,11 @@ from dataclasses import dataclass, field
 
 # 知名模型的 HuggingFace repo 映射
 KNOWN_MODELS = {
-    "fish-speech": {
-        "fish-speech/fish-speech-1.5": "Fish-Speech 1.5 (推荐)",
-        "fish-speech/fish-speech-1.4": "Fish-Speech 1.4",
-        "fish-speech/fish-speech-s1": "Fish-Speech S1",
-    },
-    "f5-tts": {
-        "SWivid/F5-TTS": "F5-TTS Base",
-        "MikhailRoshchin/F5TTS_v1": "F5-TTS v1",
-    },
-    "chattts": {
-        "2noise/ChatTTS": "ChatTTS 官方",
-    },
-    "cosyvoice": {
-        "FunAudioLLM/CosyVoice-300M": "CosyVoice 300M",
-        "FunAudioLLM/CosyVoice-300M-SFT": "CosyVoice 300M SFT",
-        "FunAudioLLM/CosyVoice-300M-Instruct": "CosyVoice 300M Instruct",
-    },
-    "kokoro": {
-        "hexgrad/Kokoro-82M": "Kokoro 82M",
-        "hexgrad/Kokoro-82M-v1.1-zh": "Kokoro v1.1 中文",
-    },
-    "xtts": {
-        "coqui/XTTS-v2": "XTTSv2 官方",
-    },
     "moss-tts": {
         "OpenMOSS-Team/MOSS-TTSD-v1.0": "MOSS-TTSD v1.0 对话合成 (推荐)",
     },
     "moss-tts-nano": {
         "OpenMOSS-Team/MOSS-TTS-Nano-100M": "MOSS-TTS Nano 100M (轻量 CPU)",
-        "OpenMOSS-Team/MOSS-TTS-Nano": "MOSS-TTS Nano 多语言",
-    },
-    "gpt-sovits": {
-        "RVC-Boss/GPT-SoVITS": "GPT-SoVITS 官方预训练",
     },
 }
 

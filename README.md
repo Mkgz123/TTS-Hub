@@ -6,15 +6,8 @@
 
 | 模型 | 架构 | 语言 | 显存 |
 |------|------|------|------|
-| Fish-Speech | VQGAN + LLM | 中英 | 4-8 GB |
-| F5-TTS | Flow Matching DiT | 中英 | 4-6 GB |
-| ChatTTS | GPT + VAE | 中文 | 2-4 GB |
-| CosyVoice | VITS + Flow | 中英 | 4-6 GB |
-| Kokoro | StyleTTS2 | 英文 | 1-2 GB |
-| XTTSv2 | GPT + HifiGAN | 中英日韩法德西 | 4-6 GB |
 | MOSS-TTS | Transformer + Codec | 中英 | 4-6 GB |
 | MOSS-TTS Nano | Codec + LLM | 中英日韩等 20 种 | CPU 可用 |
-| GPT-SoVITS | GPT + SoVITS | 中英日 | 4-8 GB |
 
 ## 快速开始
 
@@ -43,12 +36,6 @@ WebUI 的「模型下载」Tab 提供常用模型列表，点击即下载。
 也可手动从 HuggingFace 下载后放到 `models/` 目录，系统会自动识别架构。
 
 常见模型地址：
-- Fish-Speech: `fish-speech/fish-speech-1.5`
-- F5-TTS: `SWivid/F5-TTS`
-- ChatTTS: `2noise/ChatTTS`
-- CosyVoice: `FunAudioLLM/CosyVoice-300M`
-- Kokoro: `hexgrad/Kokoro-82M`
-- XTTSv2: `coqui/XTTS-v2`
 - MOSS-TTS: `OpenMOSS-Team/MOSS-TTSD-v1.0`
 - MOSS-TTS Nano: `OpenMOSS-Team/MOSS-TTS-Nano-100M`
 
@@ -60,15 +47,8 @@ WebUI 的「模型下载」Tab 提供常用模型列表，点击即下载。
 
 ```
 core/adapters/
-├── fish_speech.py      # fish_speech 包 + transformers fallback
-├── f5_tts.py           # f5_tts.api.F5TTS
-├── chattts.py          # ChatTTS.Chat
-├── cosyvoice.py        # 需克隆 CosyVoice 仓库
-├── kokoro.py           # kokoro-onnx 优先，PyTorch fallback
-├── xtts.py             # TTS.api (Coqui)
 ├── moss_tts.py         # HuggingFace transformers (MOSS-TTSD v1.0)
-├── moss_tts_nano.py    # HuggingFace transformers (Nano 100M)
-└── gpt_sovits.py       # 需克隆 GPT-SoVITS 仓库
+└── moss_tts_nano.py    # HuggingFace transformers (Nano 100M)
 ```
 
 ## 环境管理
@@ -97,7 +77,7 @@ tts-hub/
 │   ├── registry.py             # 适配器注册与懒加载
 │   ├── detector.py             # 模型架构自动检测（3 级策略）
 │   ├── download_manager.py     # HuggingFace 模型下载
-│   └── adapters/               # 8 个模型适配器
+│   └── adapters/               # 2 个模型适配器
 ├── env_manager.py              # 虚拟环境管理
 ├── models/                     # 模型存储（自动生成）
 ├── requirements.txt
