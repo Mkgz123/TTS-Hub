@@ -61,6 +61,7 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
             model_id = model_path if "/" in model_path else DEFAULT_MODEL_ID
 
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        attn = "sdpa" if device == "cuda" else "eager"
 
         # 1. 文本分词器
         self._tokenizer = AutoTokenizer.from_pretrained(
@@ -68,11 +69,12 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
             trust_remote_code=True,
         )
 
-        # 2. 主模型（AutoModel 可以加载 ForCausalLM 注册的模型）
+        # 2. 主模型（覆盖 config 中的 flash_attention_2，避免依赖 flash-attn）
         self._model = AutoModel.from_pretrained(
             model_id,
             trust_remote_code=True,
             torch_dtype=dtype,
+            attn_implementation=attn,
         ).to(device)
         self._model.eval()
 
