@@ -104,7 +104,8 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
         self._check_loaded()
 
         import torch
-        import torchaudio
+        import numpy as np
+        import soundfile as sf
 
         # 获取参考音频
         ref_audio = request.speaker or request.extra.get("ref_audio", "")
@@ -118,13 +119,16 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
         if not ref_path.exists():
             raise FileNotFoundError(f"参考音频不存在: {ref_audio}")
 
-        # 读取并预处理参考音频
+        # 读取并预处理参考音频（使用 soundfile 避免 torchaudio 2.8+ 的 torchcodec 依赖）
         target_sr = self._get_audio_tokenizer_sampling_rate()
-        wav, sr = torchaudio.load(str(ref_path))
-        wav = wav.to(torch.float32)
-        if wav.shape[0] > 1:
-            wav = wav.mean(dim=0, keepdim=True)
+        data, sr = sf.read(str(ref_path), dtype="float32")
+        wav = torch.from_numpy(data).float()
+        if wav.ndim == 1:
+            wav = wav.unsqueeze(0)  # (T,) → (1, T)
+        elif wav.ndim == 2:
+            wav = wav.transpose(0, 1)  # (T, C) → (C, T)
         if sr != target_sr:
+            import torchaudio
             wav = torchaudio.functional.resample(wav, sr, target_sr)
 
         # 编码参考音频
