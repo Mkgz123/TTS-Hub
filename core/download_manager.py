@@ -54,6 +54,9 @@ RELATED_REPOS = {
     "moss-tts": {
         "OpenMOSS-Team/MOSS-Audio-Tokenizer": "audio_tokenizer",
     },
+    "moss-tts-nano": {
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano": "audio_tokenizer_nano",
+    },
 }
 
 

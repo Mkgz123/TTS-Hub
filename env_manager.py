@@ -69,6 +69,7 @@ MODEL_REQUIREMENTS = {
         "pip_cuda": ["torch>=2.0", "torchaudio"],
         "pip": [
             "transformers>=4.45", "safetensors", "accelerate", "soundfile",
+            "sentencepiece",
         ],
     },
     "gpt-sovits": {
