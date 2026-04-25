@@ -6,17 +6,16 @@
 模型: OpenMOSS-Team/MOSS-TTS-Nano-100M
 仓库: https://github.com/OpenMOSS/MOSS-TTS-Nano
 
-使用官方 model.inference() API，兼容 voice_clone / continuation 两种模式。
+注意: 必须使用 torch<2.8，因为 torchaudio 2.8+ 的 load/save 需要 torchcodec
++ FFmpeg 共享库，在 Windows 上不可行。使用 soundfile 加载参考音频。
 """
 
 import numpy as np
 from pathlib import Path
-import tempfile
 from core.adapter_base import BaseTTSAdapter, TTSRequest, TTSResponse
 
 DEFAULT_MODEL_ID = "OpenMOSS-Team/MOSS-TTS-Nano-100M"
 DEFAULT_AUDIO_TOKENIZER_ID = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
-DEFAULT_AUDIO_TOKENIZER_TYPE = "moss-audio-tokenizer-nano"
 
 
 class MossTTSNanoAdapter(BaseTTSAdapter):
@@ -27,13 +26,12 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
 
     def __init__(self):
         super().__init__()
-        self._audio_tokenizer_path = None
+        self._audio_tokenizer = None
 
     def load_model(self, model_path: str, device: str = "cuda") -> None:
         self._device = device
         path = Path(model_path)
 
-        # 自动检测 CUDA
         if device == "cuda":
             try:
                 import torch
@@ -45,11 +43,12 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
 
         try:
             import torch
-            from transformers import AutoModelForCausalLM
+            from transformers import AutoModel, AutoTokenizer
         except ImportError:
             raise ImportError(
                 "MOSS-TTS-Nano 需要安装:\n"
-                "  pip install transformers>=4.45 torch>=2.0 torchaudio sentencepiece\n"
+                "  pip install transformers==4.57.1 torch==2.7.0 torchaudio==2.7.0\n"
+                "  pip install sentencepiece soundfile\n"
                 "或在 WebUI 环境管理中选择 moss-tts-nano 重新创建环境"
             )
 
@@ -63,28 +62,44 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
 
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
-        # 加载主模型（使用 AutoModelForCausalLM，与官方 infer.py 一致）
-        self._model = AutoModelForCausalLM.from_pretrained(
+        # 1. 文本分词器
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            model_id,
+            trust_remote_code=True,
+        )
+
+        # 2. 主模型（AutoModel 可以加载 ForCausalLM 注册的模型）
+        self._model = AutoModel.from_pretrained(
             model_id,
             trust_remote_code=True,
             torch_dtype=dtype,
         ).to(device)
         self._model.eval()
 
-        # 确定 audio tokenizer 路径
+        # 3. 音频编解码器
+        audio_tokenizer_id = (
+            getattr(self._model.config, "audio_tokenizer_pretrained_name_or_path", None)
+            or DEFAULT_AUDIO_TOKENIZER_ID
+        )
         if local_path is not None:
             codec_dir = local_path / "audio_tokenizer_nano"
             if (codec_dir / "config.json").exists():
-                self._audio_tokenizer_path = str(codec_dir)
-            else:
-                self._audio_tokenizer_path = DEFAULT_AUDIO_TOKENIZER_ID
-        else:
-            self._audio_tokenizer_path = DEFAULT_AUDIO_TOKENIZER_ID
+                audio_tokenizer_id = str(codec_dir)
+
+        self._audio_tokenizer = AutoModel.from_pretrained(
+            audio_tokenizer_id,
+            trust_remote_code=True,
+        )
+        if hasattr(self._audio_tokenizer, "to"):
+            self._audio_tokenizer = self._audio_tokenizer.to(device)
+        if hasattr(self._audio_tokenizer, "eval"):
+            self._audio_tokenizer.eval()
 
     def synthesize(self, request: TTSRequest) -> TTSResponse:
         self._check_loaded()
 
         import torch
+        import soundfile as sf
 
         # 获取参考音频
         ref_audio = request.speaker or request.extra.get("ref_audio", "")
@@ -98,38 +113,59 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
         if not ref_path.exists():
             raise FileNotFoundError(f"参考音频不存在: {ref_audio}")
 
+        # soundfile 读取（避免 torchaudio 2.8+ 的 torchcodec 依赖）
+        target_sr = self._model._resolve_audio_tokenizer_sample_rate(
+            self._audio_tokenizer
+        )
+        data, sr = sf.read(str(ref_path), dtype="float32")
+        wav = torch.from_numpy(data).float()
+        # soundfile: (samples,) 或 (samples, channels) → 统一为 (channels, samples)
+        if wav.ndim == 1:
+            wav = wav.unsqueeze(0)
+        elif wav.ndim == 2:
+            wav = wav.transpose(0, 1)
+
+        # 重采样
+        if sr != target_sr:
+            import torchaudio
+            wav = torchaudio.functional.resample(wav, sr, target_sr)
+
+        # 编码参考音频
+        wav = wav.to(self._device)
+        encoded = self._audio_tokenizer.batch_encode([wav])
+        prompt_audio_codes = self._model._normalize_audio_codes(encoded).to(self._device)
+
+        # 构建推理输入
         text = request.text.strip()
+        input_ids, attention_mask = self._model.build_inference_input_ids(
+            text=text,
+            text_tokenizer=self._tokenizer,
+            mode="voice_clone",
+            prompt_audio_codes=prompt_audio_codes,
+            device=self._device,
+        )
 
-        # 使用临时输出路径（inference() 会自动创建目录）
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            result = self._model.inference(
-                text=text,
-                output_audio_path=tmp_path,
-                mode="voice_clone",
-                reference_audio_path=str(ref_path),
-                audio_tokenizer_type=DEFAULT_AUDIO_TOKENIZER_TYPE,
-                audio_tokenizer_pretrained_name_or_path=self._audio_tokenizer_path,
-                device=self._device,
+        # 生成
+        with torch.no_grad():
+            output = self._model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
             )
 
-            waveform = result["waveform"]
-            sample_rate = result["sample_rate"]
+        # 解码
+        audio_token_ids = output.audio_token_ids
+        decoded = self._audio_tokenizer.batch_decode(
+            [audio_token_ids],
+            num_quantizers=self._model.config.n_vq,
+        )
 
-            if isinstance(waveform, torch.Tensor):
-                audio = waveform.detach().cpu().numpy()
-            else:
-                audio = np.asarray(waveform)
+        # 提取波形
+        audio_tensor, out_sr = self._model._extract_waveform_and_sample_rate(
+            decoded, fallback_sample_rate=target_sr
+        )
 
-            return TTSResponse.from_numpy(audio, sample_rate)
-
-        finally:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+        audio = audio_tensor.detach().cpu().numpy()
+        return TTSResponse.from_numpy(audio, out_sr)
 
     def get_supported_features(self) -> dict:
         return {
