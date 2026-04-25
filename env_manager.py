@@ -31,9 +31,9 @@ MODEL_REQUIREMENTS = {
     "moss-tts-nano": {
         "python": "3.12",
         "conda": ["ffmpeg"],
-        "pip_cuda": ["torch>=2.0", "torchaudio", "torchcodec"],
+        "pip_cuda": ["torch==2.7.0", "torchaudio==2.7.0"],
         "pip": [
-            "transformers>=4.45", "safetensors", "accelerate", "soundfile",
+            "transformers==4.57.1", "safetensors", "accelerate", "soundfile",
             "sentencepiece",
         ],
     },
