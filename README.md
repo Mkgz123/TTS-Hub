@@ -12,7 +12,8 @@
 | CosyVoice | VITS + Flow | 中英 | 4-6 GB |
 | Kokoro | StyleTTS2 | 英文 | 1-2 GB |
 | XTTSv2 | GPT + HifiGAN | 中英日韩法德西 | 4-6 GB |
-| MOSS-TTS | VITS-like | 中文 | 2-4 GB |
+| MOSS-TTS | Transformer + Codec | 中英 | 4-6 GB |
+| MOSS-TTS Nano | Codec + LLM | 中英日韩等 20 种 | CPU 可用 |
 | GPT-SoVITS | GPT + SoVITS | 中英日 | 4-8 GB |
 
 ## 快速开始
@@ -48,6 +49,10 @@ WebUI 的「模型下载」Tab 提供常用模型列表，点击即下载。
 - CosyVoice: `FunAudioLLM/CosyVoice-300M`
 - Kokoro: `hexgrad/Kokoro-82M`
 - XTTSv2: `coqui/XTTS-v2`
+- MOSS-TTS: `OpenMOSS-Team/MOSS-TTSD-v1.0`
+- MOSS-TTS Nano: `OpenMOSS-Team/MOSS-TTS-Nano-100M`
+
+详细使用说明见 [docs/models/](docs/models/)
 
 ## 模型适配器
 
@@ -61,7 +66,8 @@ core/adapters/
 ├── cosyvoice.py        # 需克隆 CosyVoice 仓库
 ├── kokoro.py           # kokoro-onnx 优先，PyTorch fallback
 ├── xtts.py             # TTS.api (Coqui)
-├── moss_tts.py         # moss_tts 包 + torch 直接加载 fallback
+├── moss_tts.py         # HuggingFace transformers (MOSS-TTSD v1.0)
+├── moss_tts_nano.py    # HuggingFace transformers (Nano 100M)
 └── gpt_sovits.py       # 需克隆 GPT-SoVITS 仓库
 ```
 

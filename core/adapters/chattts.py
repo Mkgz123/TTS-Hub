@@ -18,11 +18,12 @@ class ChatTTSAdapter(BaseTTSAdapter):
             import ChatTTS
             chat = ChatTTS.Chat()
             chat.load(
-                source="local", 
-                local_path=model_path, 
+                source="local",
+                local_path=model_path,
                 device=device
             )
             self._model = chat
+            self._needs_package = False
         except ImportError:
             self._needs_package = True
         except Exception as e:

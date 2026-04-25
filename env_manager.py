@@ -56,14 +56,20 @@ MODEL_REQUIREMENTS = {
         "pip": ["TTS"],
     },
     "moss-tts": {
-        "python": "3.10",
-        "conda": ["ffmpeg", "monotonic-align"],
-        "conda_channel": ["conda-forge"],
+        "python": "3.12",
+        "conda": ["ffmpeg"],
         "pip_cuda": ["torch>=2.0", "torchaudio"],
         "pip": [
-            "transformers", "safetensors", "PyYAML",
+            "transformers>=4.45", "safetensors", "accelerate", "soundfile",
         ],
-        "post_install": "git clone --depth 1 https://github.com/OpenMOSS/MOSS-TTS {env_dir}/MOSS-TTS",
+    },
+    "moss-tts-nano": {
+        "python": "3.12",
+        "conda": ["ffmpeg"],
+        "pip_cuda": ["torch>=2.0", "torchaudio"],
+        "pip": [
+            "transformers>=4.45", "safetensors", "accelerate", "soundfile",
+        ],
     },
     "gpt-sovits": {
         "python": "3.10",
@@ -207,7 +213,7 @@ def env_exists(model_type: str) -> bool:
         data = json.loads(result.stdout)
         env_name = get_conda_env_name(model_type)
         for env_path in data.get("envs", []):
-            if Path(env_path).name == env_name or env_name in env_path:
+            if Path(env_path).name == env_name:
                 return True
     except (json.JSONDecodeError, KeyError):
         pass
@@ -233,7 +239,7 @@ def get_env_python(model_type: str) -> Optional[str]:
         data = json.loads(result.stdout)
         env_name = get_conda_env_name(model_type)
         for env_path in data.get("envs", []):
-            if env_name in env_path:
+            if Path(env_path).name == env_name:
                 # 跨平台查找 Python
                 if _IS_WIN:
                     candidates = [
@@ -261,12 +267,13 @@ _CREATE_STEPS = [
 ]
 
 
-def _run_cmd_stream(cmd, timeout=600):
+def _run_cmd_stream(cmd, timeout=600, shell=False):
     """运行命令并实时 yield 输出行"""
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1,
         creationflags=_CREATE_FLAGS,
+        shell=shell,
     )
     try:
         for line in proc.stdout:
@@ -390,12 +397,15 @@ def create_env_stream(model_type: str):
     if post_install:
         yield {"step": 5, "total": total, "icon": icon, "phase": phase,
                "line": f"{icon} 执行后置安装...", "done": False, "success": False}
+        env_dir = get_env_path(model_type)
+        env_dir.mkdir(parents=True, exist_ok=True)  # 确保目标目录存在
         pip_str = " ".join(pip_cmd) if pip_cmd else "pip"
         post_cmd = post_install.format(
-            env_dir=str(get_env_path(model_type)),
+            env_dir=str(env_dir),
             pip=pip_str,
         )
-        for line in _run_cmd_stream(post_cmd.split() if "&&" not in post_cmd else ["bash", "-c", post_cmd]):
+        # 使用 shell=True 以跨平台支持 &&、cd 等 shell 操作符
+        for line in _run_cmd_stream(post_cmd, shell=True):
             yield {"step": 5, "total": total, "icon": icon, "phase": phase,
                    "line": f"  {line}", "done": False, "success": False}
         yield {"step": 5, "total": total, "icon": "✅", "phase": phase,
@@ -493,10 +503,12 @@ def create_env(model_type: str, progress_callback=None) -> str:
     post_install = req.get("post_install")
     if post_install:
         log(f"执行后置安装...")
+        env_dir = get_env_path(model_type)
+        env_dir.mkdir(parents=True, exist_ok=True)  # 确保目标目录存在
         pip_cmd = get_env_pip(model_type)
         pip_str = " ".join(pip_cmd) if pip_cmd else "pip"
         post_cmd = post_install.format(
-            env_dir=str(get_env_path(model_type)),
+            env_dir=str(env_dir),
             pip=pip_str,
         )
         subprocess.run(
@@ -689,7 +701,7 @@ def list_envs() -> list[dict]:
     for env_path in data.get("envs", []):
         env_path = Path(env_path)
         # 只列出 ttshub- 开头的环境
-        if "ttshub-" not in str(env_path):
+        if not env_path.name.startswith("ttshub-"):
             continue
 
         # 提取 model_type
@@ -770,6 +782,8 @@ def remove_env(model_type: str) -> dict:
     conda = find_conda()
     if not conda:
         return {"success": False, "message": "conda 未安装"}
+
+    _accept_conda_tos(conda)
 
     env_name = get_conda_env_name(model_type)
     result = subprocess.run(

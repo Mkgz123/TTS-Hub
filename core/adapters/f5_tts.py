@@ -17,6 +17,7 @@ class F5TTSAdapter(BaseTTSAdapter):
         
         try:
             from f5_tts.api import F5TTS
+            self._needs_package = False
         except ImportError:
             self._needs_package = True
             return

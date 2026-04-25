@@ -37,10 +37,22 @@ KNOWN_MODELS = {
         "coqui/XTTS-v2": "XTTSv2 官方",
     },
     "moss-tts": {
-        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "MOSS-TTS Nano 100M",
+        "OpenMOSS-Team/MOSS-TTSD-v1.0": "MOSS-TTSD v1.0 对话合成 (推荐)",
+    },
+    "moss-tts-nano": {
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "MOSS-TTS Nano 100M (轻量 CPU)",
+        "OpenMOSS-Team/MOSS-TTS-Nano": "MOSS-TTS Nano 多语言",
     },
     "gpt-sovits": {
         "RVC-Boss/GPT-SoVITS": "GPT-SoVITS 官方预训练",
+    },
+}
+
+# 某些模型的推理代码引用了其他 HF 仓库，需要一并下载到本地
+# 格式: model_type → {repo_id: 子目录名}
+RELATED_REPOS = {
+    "moss-tts": {
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer": "audio_tokenizer",
     },
 }
 
@@ -146,6 +158,20 @@ class DownloadManager:
                 kwargs["ignore_patterns"] = exclude_patterns
 
             snapshot_download(**kwargs)
+
+            # 下载关联仓库（如 audio tokenizer）
+            related = RELATED_REPOS.get(model_type or "", {})
+            for related_repo_id, subdir in related.items():
+                try:
+                    related_dir = local_dir / subdir
+                    related_dir.mkdir(parents=True, exist_ok=True)
+                    snapshot_download(
+                        repo_id=related_repo_id,
+                        local_dir=str(related_dir),
+                        local_dir_use_symlinks=False,
+                    )
+                except Exception:
+                    pass  # 关联仓库下载失败不阻塞主流程
 
             progress.status = "completed"
             progress.progress = 100.0

@@ -39,7 +39,7 @@ class TestRegistry:
     def test_is_supported_known_types(self):
         from core.registry import is_supported
         known = ["fish-speech", "f5-tts", "chattts", "cosyvoice",
-                 "kokoro", "xtts", "moss-tts", "gpt-sovits"]
+                 "kokoro", "xtts", "moss-tts", "moss-tts-nano", "gpt-sovits"]
         for mt in known:
             assert is_supported(mt), f"{mt} 应该被支持"
 

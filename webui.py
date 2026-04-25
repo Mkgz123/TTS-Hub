@@ -25,6 +25,8 @@ from env_manager import (
     install_model_deps, env_exists,
     get_env_python, list_envs, remove_env, is_conda_available,
     run_code_in_env, get_env_pip, MODEL_REQUIREMENTS, startup_check,
+    SHARED_REQUIREMENTS, _has_nvidia_gpu,
+    _PIP_TORCH_CUDA_INDEX, _PIP_TORCH_CPU_INDEX,
 )
 
 def _clean_stderr(stderr: str, max_chars: int = 1500) -> str:
@@ -45,7 +47,10 @@ def _clean_stderr(stderr: str, max_chars: int = 1500) -> str:
                      "Loading weights:", "Using `chunk_length_s`",
                      "You are using a", "please upgrade", "end of life",
                      "Couldn't find ffmpeg", "defaulting to ffmpeg",
-                     "experimental with seq2seq", "caveats")
+                     "experimental with seq2seq", "caveats",
+                     "A new version of the following files was downloaded",
+                     "Make sure to double-check they do not contain",
+                     "To avoid downloading new versions of the code file")
 
     lines = stderr.split("\n")
     kept = []
@@ -350,7 +355,7 @@ else:
     print('LOAD_FAIL: adapter not found')
 """
         try:
-            stdout, stderr, rc = run_code_in_env(model_type, check_code)
+            stdout, stderr, rc = run_code_in_env(model_type, check_code, timeout=900)
             if rc == 0 and "LOAD_OK" in stdout:
                 features = []
                 for line in stdout.strip().split("\n"):
@@ -461,7 +466,7 @@ sf.write('{output_path}', response.audio, response.sample_rate)
 print('SYNTH_OK')
 """
     try:
-        stdout, stderr, rc = run_code_in_env(model_type, code)
+        stdout, stderr, rc = run_code_in_env(model_type, code, timeout=900)
         if rc == 0 and "SYNTH_OK" in stdout:
             if os.path.exists(output_path):
                 data, sr = sf.read(output_path)

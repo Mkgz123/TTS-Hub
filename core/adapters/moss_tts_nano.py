@@ -1,50 +1,34 @@
-"""MOSS-TTS 适配器 (v1.0)
+"""MOSS-TTS-Nano 适配器
 
-基于 HuggingFace transformers 的 MOSS-TTSD v1.0 模型适配。
-对话式语音合成，支持零样本声音克隆，需要提供参考音频。
+轻量级多语言 TTS 模型，仅 0.1B 参数，支持 CPU 实时推理。
+零样本声音克隆，需要提供参考音频。
 
-模型: OpenMOSS-Team/MOSS-TTSD-v1.0
-仓库: https://github.com/OpenMOSS/MOSS-TTS
+模型: OpenMOSS-Team/MOSS-TTS-Nano-100M
+仓库: https://github.com/OpenMOSS/MOSS-TTS-Nano
 """
 
-import importlib.util
 import numpy as np
 from pathlib import Path
 from core.adapter_base import BaseTTSAdapter, TTSRequest, TTSResponse
 
-DEFAULT_MODEL_ID = "OpenMOSS-Team/MOSS-TTSD-v1.0"
+DEFAULT_MODEL_ID = "OpenMOSS-Team/MOSS-TTS-Nano-100M"
 
 
-class MossttsAdapter(BaseTTSAdapter):
-    model_type = "moss-tts"
-    display_name = "MOSS-TTS v1.0"
-    supported_languages = ["zh", "en"]
-    default_sample_rate = 24000
+class MossTTSNanoAdapter(BaseTTSAdapter):
+    model_type = "moss-tts-nano"
+    display_name = "MOSS-TTS Nano (100M)"
+    supported_languages = ["zh", "en", "ja", "ko", "fr", "de", "es"]
+    default_sample_rate = 48000
 
     def __init__(self):
         super().__init__()
         self._processor = None
 
-    def _resolve_attn_implementation(self, device: str, dtype) -> str:
-        """选择合适的 attention 实现"""
-        import torch
-        if (
-            device == "cuda"
-            and importlib.util.find_spec("flash_attn") is not None
-            and dtype in {torch.float16, torch.bfloat16}
-        ):
-            major, _ = torch.cuda.get_device_capability()
-            if major >= 8:
-                return "flash_attention_2"
-        if device == "cuda":
-            return "sdpa"
-        return "eager"
-
     def load_model(self, model_path: str, device: str = "cuda") -> None:
         self._device = device
         path = Path(model_path)
 
-        # 自动检测 CUDA
+        # 自动检测 CUDA（Nano 在 CPU 上也能流畅运行）
         if device == "cuda":
             try:
                 import torch
@@ -59,59 +43,28 @@ class MossttsAdapter(BaseTTSAdapter):
             from transformers import AutoModel, AutoProcessor
         except ImportError:
             raise ImportError(
-                "MOSS-TTS (TTSD v1.0) 需要安装:\n"
+                "MOSS-TTS-Nano 需要安装:\n"
                 "  pip install transformers>=4.45 torch>=2.0 torchaudio\n"
-                "或在 WebUI 环境管理中选择 moss-tts 重新创建环境"
+                "或在 WebUI 环境管理中选择 moss-tts-nano 重新创建环境"
             )
 
-        # CUDA SDPA 后端配置
-        if device == "cuda":
-            torch.backends.cuda.enable_cudnn_sdp(False)
-            torch.backends.cuda.enable_flash_sdp(True)
-            torch.backends.cuda.enable_mem_efficient_sdp(True)
-            torch.backends.cuda.enable_math_sdp(True)
-
         # 确定模型路径
-        local_path = None
         if path.exists() and (path / "config.json").exists():
             model_id = str(path)
-            local_path = path
         else:
             model_id = model_path if "/" in model_path else DEFAULT_MODEL_ID
 
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
-        attn_implementation = self._resolve_attn_implementation(device, dtype)
-
-        # 如果本地有 audio_tokenizer 子目录，优先使用本地文件
-        processor_kwargs = {"trust_remote_code": True}
-        if local_path is not None:
-            codec_dir = local_path / "audio_tokenizer"
-            if (codec_dir / "config.json").exists():
-                processor_kwargs["codec_path"] = str(codec_dir)
 
         self._processor = AutoProcessor.from_pretrained(
             model_id,
-            **processor_kwargs,
+            trust_remote_code=True,
         )
 
-        # 检测模型类型：TTSD v1.0 有 audio_tokenizer，Nano 系列没有
-        if not hasattr(self._processor, "audio_tokenizer"):
-            raise RuntimeError(
-                "检测到 MOSS-TTS Nano 系列模型，当前适配器仅支持 TTSD v1.0。\n\n"
-                "请下载正确的模型：\n"
-                "  HuggingFace: OpenMOSS-Team/MOSS-TTSD-v1.0\n"
-                "或在 WebUI 下载选项卡中选择「MOSS-TTSD v1.0 对话合成 (推荐)」\n\n"
-                f"当前加载的模型: {model_id}"
-            )
-
-        if device == "cuda":
-            self._processor.audio_tokenizer = self._processor.audio_tokenizer.to(device)
-        self._processor.audio_tokenizer.eval()
-
+        # Nano 的 processor 没有独立的 audio_tokenizer，codec 内嵌在 processor 中
         self._model = AutoModel.from_pretrained(
             model_id,
             trust_remote_code=True,
-            attn_implementation=attn_implementation,
             torch_dtype=dtype,
         ).to(device)
         self._model.eval()
@@ -126,7 +79,7 @@ class MossttsAdapter(BaseTTSAdapter):
         ref_audio = request.speaker or request.extra.get("ref_audio", "")
         if not ref_audio:
             raise ValueError(
-                "MOSS-TTS 需要参考音频进行声音克隆。\n"
+                "MOSS-TTS-Nano 需要参考音频进行声音克隆。\n"
                 "请通过 speaker 参数或 extra['ref_audio'] 传入参考音频路径。"
             )
 

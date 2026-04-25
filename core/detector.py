@@ -53,6 +53,9 @@ CONFIG_MODEL_TYPE_MAP = {
     "f5_tts": "f5-tts",
     "fish_speech": "fish-speech",
     "fish-speech": "fish-speech",
+    "moss_tts_delay": "moss-tts",
+    "moss_tts_nano": "moss-tts-nano",
+    "moss-tts-nano": "moss-tts-nano",
 }
 
 # architectures 字段关键词映射
@@ -61,6 +64,8 @@ ARCH_KEYWORDS = {
     "cosyvoice": "cosyvoice",
     "xtts": "xtts",
     "kokoro": "kokoro",
+    "mossttsdelay": "moss-tts",
+    "mossttsnano": "moss-tts-nano",
 }
 
 
@@ -78,12 +83,9 @@ def _read_config(model_dir: Path) -> Optional[dict]:
 
 def _check_fingerprint(model_dir: Path, fingerprint: dict) -> bool:
     """检查文件指纹是否匹配"""
-    # 检查特征文件
     for pattern in fingerprint.get("files", []):
         if "*" in pattern:
-            # 简单通配符匹配
-            prefix, suffix = pattern.split("*", 1)
-            matches = list(model_dir.glob(f"*{suffix}"))
+            matches = list(model_dir.glob(pattern))
             if not matches:
                 return False
         else:
@@ -175,6 +177,10 @@ def detect_model_type(model_dir: str) -> dict:
         "chat-tts": "chattts",
         "kokoro": "kokoro",
         "xtts": "xtts",
+        "moss-ttsd": "moss-tts",
+        "moss_ttsd": "moss-tts",
+        "moss-tts-nano": "moss-tts-nano",
+        "moss_tts_nano": "moss-tts-nano",
         "moss": "moss-tts",
         "gpt-sovits": "gpt-sovits",
         "gpt_sovits": "gpt-sovits",
