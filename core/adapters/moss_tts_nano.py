@@ -69,12 +69,21 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
             trust_remote_code=True,
         )
 
-        # 2. 主模型（覆盖 config 中的 flash_attention_2，避免依赖 flash-attn）
+        # 2. 主模型
+        # Nano 的 config.json 写死了 flash_attention_2，但其 __init__ 直接读
+        # config.attn_implementation 而非 config._attn_implementation，
+        # 导致 from_pretrained(attn_implementation=...) 参数被忽略。
+        # 这里直接修改 config 后再加载。
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+        config.attn_implementation = attn
+        config.local_transformer_attn_implementation = attn
+
         self._model = AutoModel.from_pretrained(
             model_id,
             trust_remote_code=True,
             torch_dtype=dtype,
-            attn_implementation=attn,
+            config=config,
         ).to(device)
         self._model.eval()
 
