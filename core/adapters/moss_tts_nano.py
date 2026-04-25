@@ -111,81 +111,69 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
 
         import torch
         import soundfile as sf
+        import torchaudio
 
-        # 获取参考音频
+        # ── 参考音频 ──
         ref_audio = request.speaker or request.extra.get("ref_audio", "")
         if not ref_audio:
             raise ValueError(
                 "MOSS-TTS-Nano 需要参考音频进行声音克隆。\n"
                 "请通过 speaker 参数或 extra['ref_audio'] 传入参考音频路径。"
             )
-
         ref_path = Path(ref_audio)
         if not ref_path.exists():
             raise FileNotFoundError(f"参考音频不存在: {ref_audio}")
 
-        # soundfile 读取（避免 torchaudio 2.8+ 的 torchcodec 依赖）
-        target_sr = self._model._resolve_audio_tokenizer_sample_rate(
-            self._audio_tokenizer
-        )
-        data, sr = sf.read(str(ref_path), dtype="float32")
-        wav = torch.from_numpy(data).float()
-        # soundfile: (samples,) 或 (samples, channels) → 统一为 (channels, samples)
-        if wav.ndim == 1:
-            wav = wav.unsqueeze(0)
+        # ── Monkey-patch torchaudio I/O → soundfile ──
+        _orig_load = torchaudio.load
+        _orig_save = torchaudio.save
 
-        # Nano audio tokenizer 要求立体声 (2 channels)
-        target_channels = self._model._resolve_audio_tokenizer_channels(
-            self._audio_tokenizer
-        )
-        if wav.shape[0] == 1 and target_channels == 2:
-            wav = wav.repeat(2, 1)
-        elif wav.shape[0] > target_channels:
-            wav = wav[:target_channels]
-        elif wav.ndim == 2:
-            wav = wav.transpose(0, 1)
+        def _sf_load(path, *args, **kwargs):
+            data, sr = sf.read(str(path), dtype="float32")
+            wav = torch.from_numpy(data).float()
+            if wav.ndim == 1:
+                wav = wav.unsqueeze(0)
+            else:
+                wav = wav.T
+            return wav, sr
 
-        # 重采样
-        if sr != target_sr:
-            import torchaudio
-            wav = torchaudio.functional.resample(wav, sr, target_sr)
+        def _sf_save(path, waveform, sample_rate, *args, **kwargs):
+            audio = waveform.detach().cpu().numpy()
+            if audio.ndim == 2:
+                audio = audio.T
+            sf.write(str(path), audio, int(sample_rate))
 
-        # 编码参考音频
-        wav = wav.to(self._device)
-        encoded = self._audio_tokenizer.batch_encode([wav])
-        prompt_audio_codes = self._model._normalize_audio_codes(encoded).to(self._device)
+        torchaudio.load = _sf_load
+        torchaudio.save = _sf_save
 
-        # 构建推理输入
-        text = request.text.strip()
-        input_ids, attention_mask = self._model.build_inference_input_ids(
-            text=text,
-            text_tokenizer=self._tokenizer,
-            mode="voice_clone",
-            prompt_audio_codes=prompt_audio_codes,
-            device=self._device,
-        )
+        try:
+            import tempfile
+            tmp_out = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp_out.close()
 
-        # 生成
-        with torch.no_grad():
-            output = self._model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
+            result = self._model.inference(
+                text=request.text.strip(),
+                output_audio_path=tmp_out.name,
+                mode="voice_clone",
+                reference_audio_path=str(ref_path),
+                text_tokenizer=self._tokenizer,
+                audio_tokenizer=self._audio_tokenizer,
+                device=self._device,
             )
 
-        # 解码
-        audio_token_ids = output.audio_token_ids
-        decoded = self._audio_tokenizer.batch_decode(
-            [audio_token_ids],
-            num_quantizers=self._model.config.n_vq,
-        )
+            waveform = result["waveform"]
+            if waveform is None:
+                raise RuntimeError("inference 未返回波形数据")
 
-        # 提取波形
-        audio_tensor, out_sr = self._model._extract_waveform_and_sample_rate(
-            decoded, fallback_sample_rate=target_sr
-        )
-
-        audio = audio_tensor.detach().cpu().numpy()
-        return TTSResponse.from_numpy(audio, out_sr)
+            audio = waveform.detach().cpu().numpy()
+            if audio.ndim == 3:
+                audio = audio[0]
+            if audio.ndim == 2:
+                audio = audio.T
+            return TTSResponse.from_numpy(audio, int(result["sample_rate"]))
+        finally:
+            torchaudio.load = _orig_load
+            torchaudio.save = _orig_save
 
     def get_supported_features(self) -> dict:
         return {
