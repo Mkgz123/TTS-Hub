@@ -122,6 +122,15 @@ class MossTTSNanoAdapter(BaseTTSAdapter):
         # soundfile: (samples,) 或 (samples, channels) → 统一为 (channels, samples)
         if wav.ndim == 1:
             wav = wav.unsqueeze(0)
+
+        # Nano audio tokenizer 要求立体声 (2 channels)
+        target_channels = self._model._resolve_audio_tokenizer_channels(
+            self._audio_tokenizer
+        )
+        if wav.shape[0] == 1 and target_channels == 2:
+            wav = wav.repeat(2, 1)
+        elif wav.shape[0] > target_channels:
+            wav = wav[:target_channels]
         elif wav.ndim == 2:
             wav = wav.transpose(0, 1)
 
