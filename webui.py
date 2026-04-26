@@ -1770,7 +1770,7 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
 
         # 多轮对话合成
         rt_synthesize_btn.click(
-            fn=realtime_synthesize_handler,
+            fn=multiturn_synthesize_handler,
             inputs=[rt_chat_state, rt_spk_a_name, rt_spk_b_name,
                     rt_spk_a_ref, rt_spk_b_ref,
                     rt_temperature, rt_top_p, rt_top_k,
