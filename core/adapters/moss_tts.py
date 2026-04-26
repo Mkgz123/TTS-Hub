@@ -17,7 +17,7 @@ DEFAULT_MODEL_ID = "OpenMOSS-Team/MOSS-TTSD-v1.0"
 
 class MossttsAdapter(BaseTTSAdapter):
     model_type = "moss-tts"
-    display_name = "MOSS-TTS v1.0"
+    display_name = "MOSS-TTSD v1.0"
     supported_languages = ["zh", "en"]
     default_sample_rate = 24000
 

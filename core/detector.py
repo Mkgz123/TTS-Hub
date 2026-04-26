@@ -19,15 +19,19 @@ FILE_FINGERPRINTS = {
 
 # config.json 中的 model_type 直接映射
 CONFIG_MODEL_TYPE_MAP = {
-    "moss_tts_delay": "moss-tts",
     "moss_tts_nano": "moss-tts-nano",
     "moss-tts-nano": "moss-tts-nano",
+    "moss_voice_generator": "moss-voicegen",
+    "moss_tts_realtime": "moss-tts-realtime",
 }
 
 # architectures 字段关键词映射
 ARCH_KEYWORDS = {
     "mossttsdelay": "moss-tts",
     "mossttsnano": "moss-tts-nano",
+    "mossvoicegenerator": "moss-voicegen",
+    "mosssoundeffect": "moss-soundeffect",
+    "mossttsrealtime": "moss-tts-realtime",
 }
 
 
@@ -92,6 +96,52 @@ def detect_model_type(model_dir: str) -> dict:
     # === 策略 1：config.json 的 model_type 字段 ===
     if config:
         model_type = config.get("model_type", "")
+
+        # moss_tts_delay 被 TTSD、VoiceGenerator、SoundEffect 三家共享
+        # codec 文件三者都有，不可靠 → 以 architectures + 目录名为准
+        if model_type == "moss_tts_delay":
+            dir_name = model_path.name.lower()
+
+            # 策略 A：目录名精确匹配（HF 下载后目录名固定）
+            name_rules = [
+                (["moss-soundeffect", "moss_sound_effect", "soundeffect"], "moss-soundeffect"),
+                (["moss-voicegenerator", "moss_voice_generator", "voicegenerator"], "moss-voicegen"),
+                (["moss-ttsd", "moss_ttsd-v1", "ttsd"], "moss-tts"),
+            ]
+            for keywords, mtype in name_rules:
+                for kw in keywords:
+                    if kw in dir_name:
+                        return {
+                            "model_type": mtype,
+                            "confidence": "high",
+                            "method": f"config.json model_type=moss_tts_delay + 目录名 '{kw}'",
+                            "config": config,
+                            "needs_confirmation": False,
+                        }
+
+            # 策略 B：architectures 字段
+            architectures = config.get("architectures", [])
+            for arch in architectures:
+                arch_lower = arch.lower()
+                for keyword, mtype in ARCH_KEYWORDS.items():
+                    if keyword in arch_lower:
+                        return {
+                            "model_type": mtype,
+                            "confidence": "high",
+                            "method": f"config.json model_type=moss_tts_delay + architectures={arch}",
+                            "config": config,
+                            "needs_confirmation": False,
+                        }
+
+            # 策略 C：兜底，需要用户确认
+            return {
+                "model_type": "moss-tts",
+                "confidence": "low",
+                "method": "config.json model_type=moss_tts_delay (无法区分，默认TTSD)",
+                "config": config,
+                "needs_confirmation": True,
+            }
+
         if model_type in CONFIG_MODEL_TYPE_MAP:
             return {
                 "model_type": CONFIG_MODEL_TYPE_MAP[model_type],
@@ -134,7 +184,15 @@ def detect_model_type(model_dir: str) -> dict:
         "moss_ttsd": "moss-tts",
         "moss-tts-nano": "moss-tts-nano",
         "moss_tts_nano": "moss-tts-nano",
-        "moss": "moss-tts",
+        "moss-voicegenerator": "moss-voicegen",
+        "moss_voice_generator": "moss-voicegen",
+        "moss-soundeffect": "moss-soundeffect",
+        "moss_sound_effect": "moss-soundeffect",
+        "soundeffect": "moss-soundeffect",
+        "moss-tts": "moss-tts",
+        "moss-tts-realtime": "moss-tts-realtime",
+        "tts-realtime": "moss-tts-realtime",
+        "realtime": "moss-tts-realtime",
     }
     for hint, mtype in name_hints.items():
         if hint in dir_name:

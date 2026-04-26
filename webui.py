@@ -331,8 +331,8 @@ def load_model_handler(model_dir: str, selection: str, device: str) -> str:
             if env_status:
                 result = f"📦 环境:\n{env_status}\n\n{result}"
             return result
-        except ImportError:
-            pass  # 当前进程缺少依赖，走 subprocess 路径
+        except (ImportError, RuntimeError):
+            pass  # 当前进程缺少依赖或无 GPU，走 conda subprocess 路径
         except Exception as e:
             result = f"❌ 加载失败: {e}"
             if env_status:
@@ -387,7 +387,7 @@ else:
 # 语音合成
 # ============================================================
 
-def synthesize_handler(text, speaker, language, speed, model_type):
+def synthesize_handler(text, speaker, language, speed, gap, model_type):
     if not text or not text.strip():
         return None, "❌ 请输入文本"
 
@@ -401,22 +401,28 @@ def synthesize_handler(text, speaker, language, speed, model_type):
         )
         try:
             response = adapter.synthesize(request)
+            audio = response.audio
+            if gap != 0:
+                from core.audio_utils import adjust_sentence_gap
+                audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap)
             import soundfile as sf
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            sf.write(tmp.name, response.audio, response.sample_rate)
-            info = f"✅ 合成完成 | 时长: {response.duration:.2f}s | 采样率: {response.sample_rate}Hz"
+            sf.write(tmp.name, audio, response.sample_rate)
+            info = f"✅ 合成完成 | 时长: {len(audio)/response.sample_rate:.2f}s | 采样率: {response.sample_rate}Hz"
+            if gap != 0:
+                info += f" | 句间间隙: {gap}ms"
             return tmp.name, info
         except Exception as e:
             return None, f"❌ 合成失败: {e}"
 
     # 当前进程无适配器 → 尝试 conda 环境 subprocess
     if is_conda_available() and env_exists(model_type):
-        return _synthesize_via_conda(text, speaker, language, speed, model_type)
+        return _synthesize_via_conda(text, speaker, language, speed, gap, model_type)
 
     return None, "❌ 请先加载模型"
 
 
-def _synthesize_via_conda(text, speaker, language, speed, model_type):
+def _synthesize_via_conda(text, speaker, language, speed, gap, model_type):
     """通过 conda 环境的 subprocess 进行合成"""
     import soundfile as sf
     import base64
@@ -462,7 +468,12 @@ request = TTSRequest(
     speed={speed},
 )
 response = adapter.synthesize(request)
-sf.write('{output_path}', response.audio, response.sample_rate)
+audio = response.audio
+gap = {gap}
+if gap != 0:
+    from core.audio_utils import adjust_sentence_gap
+    audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap)
+sf.write('{output_path}', audio, response.sample_rate)
 print('SYNTH_OK')
 """
     try:
@@ -472,6 +483,8 @@ print('SYNTH_OK')
                 data, sr = sf.read(output_path)
                 duration = len(data) / sr
                 info = f"✅ 合成完成 (conda环境) | 时长: {duration:.2f}s | 采样率: {sr}Hz"
+                if gap > 0:
+                    info += f" | 句间间隙: {gap}ms"
                 return output_path, info
         return None, f"❌ 合成失败 (rc={rc}):\n{_clean_stderr(stderr)}"
     except Exception as e:
@@ -482,7 +495,7 @@ print('SYNTH_OK')
 # 批量合成
 # ============================================================
 
-def batch_synthesize(texts, speaker, language, speed, model_type):
+def batch_synthesize(texts, speaker, language, speed, gap, model_type):
     """批量合成多段文本"""
     if not texts or not texts.strip():
         return None, "❌ 请输入文本（每行一段）"
@@ -522,16 +535,396 @@ def batch_synthesize(texts, speaker, language, speed, model_type):
     # 拼接所有音频
     import numpy as np
     combined = np.concatenate(results)
+    sample_rate = adapter.default_sample_rate
+    if gap != 0:
+        from core.audio_utils import adjust_sentence_gap
+        combined = adjust_sentence_gap(combined, sample_rate, gap_ms=gap)
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    sf.write(tmp.name, combined, adapter.default_sample_rate)
+    sf.write(tmp.name, combined, sample_rate)
 
     info = (f"✅ 批量合成完成\n"
             f"📝 成功: {len(results)}/{len(lines)} 段\n"
             f"⏱️ 总时长: {total_duration:.2f}s")
+    if gap != 0:
+        info += f"\n🔧 句间间隙: {gap}ms"
     if failed:
         info += f"\n⚠️ 失败: {failed} 段"
 
     return tmp.name, info
+
+
+# ============================================================
+# 语音设计
+# ============================================================
+
+def voicegen_synthesize_handler(text, instruction, temperature, top_p, top_k,
+                                 repetition_penalty, max_new_tokens, gap,
+                                 model_type, model_dir, selection):
+    if not text or not text.strip():
+        return None, "❌ 请输入合成文本"
+    if not instruction or not instruction.strip():
+        return None, "❌ 请输入音色描述"
+    if not selection or "未找到" in str(selection):
+        return None, "❌ 请先选择并加载模型"
+
+    # 解析模型路径
+    model_path = ""
+    for m in scan_models(model_dir):
+        if m["name"] in str(selection):
+            model_path = Path(m["path"]).as_posix()
+            break
+    if not model_path:
+        return None, "❌ 未找到模型路径"
+
+    import json as _json
+    params = {
+        "model_path": model_path,
+        "text": text.strip(),
+        "instruction": instruction.strip(),
+        "audio_temperature": float(temperature),
+        "audio_top_p": float(top_p),
+        "audio_top_k": int(top_k),
+        "audio_repetition_penalty": float(repetition_penalty),
+        "max_new_tokens": int(max_new_tokens),
+        "gap_ms": int(gap),
+    }
+
+    # 写参数到临时 JSON 文件
+    params_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    )
+    _json.dump(params, params_file)
+    params_file.close()
+
+    # 输出 WAV 路径
+    out_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    out_path = Path(out_file.name).as_posix()
+    out_file.close()
+
+    code = f'''
+import json, sys
+params_file = r"{Path(params_file.name).as_posix()}"
+out_path = r"{out_path}"
+
+with open(params_file, "r", encoding="utf-8") as f:
+    params = json.load(f)
+
+sys.path.insert(0, r"{Path(__file__).parent.as_posix()}")
+from core.registry import get_adapter
+adapter = get_adapter("{model_type}")
+if not adapter:
+    print("FAIL: adapter not found")
+    sys.exit(1)
+
+adapter.load_model(params["model_path"], device="cuda")
+from core.adapter_base import TTSRequest
+request = TTSRequest(
+    text=params["text"],
+    extra={{k: v for k, v in params.items() if k not in ("text", "model_path", "gap_ms")}},
+)
+response = adapter.synthesize(request)
+audio = response.audio
+gap_ms = params.get("gap_ms", 0)
+if gap_ms != 0:
+    from core.audio_utils import adjust_sentence_gap
+    audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap_ms)
+import soundfile as sf
+sf.write(out_path, audio, response.sample_rate)
+print(f"OK|{{response.duration:.2f}}|{{response.sample_rate}}")
+'''
+
+    try:
+        stdout, stderr, rc = run_code_in_env(model_type, code, timeout=900)
+        if rc == 0 and "OK|" in stdout:
+            line = stdout.strip().split("\n")[-1]
+            _, duration, sr = line.split("|")
+            info = f"✅ 语音设计完成 | 时长: {float(duration):.2f}s | 采样率: {sr}Hz"
+            if gap != 0:
+                info += f" | 句间间隙: {gap}ms"
+            # 清理 JSON 参数文件
+            try:
+                Path(params_file.name).unlink()
+            except Exception:
+                pass
+            return out_path, info
+        else:
+            err = _clean_stderr(stderr) or stdout[:800]
+            try:
+                Path(params_file.name).unlink()
+            except Exception:
+                pass
+            return None, f"❌ 语音设计失败:\n{err}"
+    except Exception as e:
+        try:
+            Path(params_file.name).unlink()
+        except Exception:
+            pass
+        return None, f"❌ 语音设计失败: {e}"
+
+
+# ============================================================
+# 多轮对话
+# ============================================================
+
+def chat_to_markdown(chat_state, spk_a_name, spk_b_name):
+    """将对话状态渲染为聊天气泡 Markdown"""
+    if not chat_state:
+        return "*（对话记录将显示在这里）*"
+    lines = []
+    for i, msg in enumerate(chat_state):
+        speaker = msg.get("speaker", "?")
+        text = msg.get("text", "")
+        name = spk_a_name if speaker == "A" else spk_b_name
+        if speaker == "A":
+            # 左对齐气泡（蓝色）
+            lines.append(
+                f'<div style="display:flex;align-items:flex-start;margin:8px 0;gap:8px">'
+                f'<div style="background:#e3f2fd;border-radius:12px;padding:8px 14px;max-width:75%;">'
+                f'<div style="font-size:0.8em;color:#1565c0;font-weight:bold;margin-bottom:2px;">{name}</div>'
+                f'<div>{text}</div></div></div>'
+            )
+        else:
+            # 右对齐气泡（绿色）
+            lines.append(
+                f'<div style="display:flex;align-items:flex-start;margin:8px 0;gap:8px;justify-content:flex-end;">'
+                f'<div style="background:#e8f5e9;border-radius:12px;padding:8px 14px;max-width:75%;">'
+                f'<div style="font-size:0.8em;color:#2e7d32;font-weight:bold;margin-bottom:2px;text-align:right;">{name}</div>'
+                f'<div>{text}</div></div></div>'
+            )
+    return "".join(lines)
+
+
+def multiturn_synthesize_handler(chat_state, spk_a_name, spk_b_name,
+                                  spk_a_ref, spk_b_ref,
+                                  temperature, top_p, top_k,
+                                  repetition_penalty, repetition_window, gap,
+                                  model_type, model_dir, selection):
+    if not chat_state:
+        return None, "❌ 请先添加对话消息"
+    if not selection or "未找到" in str(selection):
+        return None, "❌ 请先选择并加载模型"
+
+    # 解析模型路径
+    model_path = ""
+    for m in scan_models(model_dir):
+        if m["name"] in str(selection):
+            model_path = Path(m["path"]).as_posix()
+            break
+    if not model_path:
+        return None, "❌ 未找到模型路径"
+
+    import json as _json
+
+    # 构建文本列表和参考音频列表
+    texts = []
+    ref_audios = []
+    for msg in chat_state:
+        texts.append(msg.get("text", ""))
+        speaker = msg.get("speaker", "A")
+        ref = spk_a_ref if speaker == "A" else spk_b_ref
+        ref_audios.append(ref if ref else None)
+
+    params = {
+        "model_path": model_path,
+        "texts": texts,
+        "ref_audios": ref_audios,
+        "temperature": float(temperature),
+        "top_p": float(top_p),
+        "top_k": int(top_k),
+        "repetition_penalty": float(repetition_penalty),
+        "repetition_window": int(repetition_window),
+        "gap_ms": int(gap),
+    }
+
+    # 写参数到临时 JSON 文件
+    params_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    )
+    _json.dump(params, params_file)
+    params_file.close()
+
+    # 输出 WAV 路径
+    out_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    out_path = Path(out_file.name).as_posix()
+    out_file.close()
+
+    code = f'''
+import os as _os
+_os.environ.setdefault("TORCHAUDIO_BACKEND", "soundfile")
+import json, sys
+params_file = r"{Path(params_file.name).as_posix()}"
+out_path = r"{out_path}"
+
+with open(params_file, "r", encoding="utf-8") as f:
+    params = json.load(f)
+
+sys.path.insert(0, r"{Path(__file__).parent.as_posix()}")
+from core.registry import get_adapter
+adapter = get_adapter("{model_type}")
+if not adapter:
+    print("FAIL: adapter not found")
+    sys.exit(1)
+
+adapter.load_model(params["model_path"], device="cuda")
+from core.adapter_base import TTSRequest
+
+# 将文本用换行连接，参考音频路径存在 extra 中
+text = chr(10).join(params["texts"])
+ref_audios = params.get("ref_audios", [])
+
+request = TTSRequest(
+    text=text,
+    extra={{
+        "ref_audio_list": ref_audios,
+        "temperature": params["temperature"],
+        "top_p": params["top_p"],
+        "top_k": params["top_k"],
+        "repetition_penalty": params["repetition_penalty"],
+        "repetition_window": params["repetition_window"],
+    }},
+)
+response = adapter.synthesize(request)
+audio = response.audio
+gap_ms = params.get("gap_ms", 0)
+if gap_ms != 0:
+    from core.audio_utils import adjust_sentence_gap
+    audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap_ms)
+import soundfile as sf
+sf.write(out_path, audio, response.sample_rate)
+print(f"OK|{{response.duration:.2f}}|{{response.sample_rate}}")
+'''
+
+    try:
+        stdout, stderr, rc = run_code_in_env(model_type, code, timeout=900)
+        if rc == 0 and "OK|" in stdout:
+            line = stdout.strip().split("\n")[-1]
+            _, duration, sr = line.split("|")
+            info = f"✅ 对话合成完成 | 时长: {float(duration):.2f}s | 采样率: {sr}Hz"
+            if gap != 0:
+                info += f" | 句间间隙: {gap}ms"
+            try:
+                Path(params_file.name).unlink()
+            except Exception:
+                pass
+            return out_path, info
+        else:
+            err = _clean_stderr(stderr) or stdout[:800]
+            try:
+                Path(params_file.name).unlink()
+            except Exception:
+                pass
+            return None, f"❌ 对话合成失败:\n{err}"
+    except Exception as e:
+        try:
+            Path(params_file.name).unlink()
+        except Exception:
+            pass
+        return None, f"❌ 对话合成失败: {e}"
+
+
+# ============================================================
+# 音效生成
+# ============================================================
+
+def soundeffect_synthesize_handler(prompt, temperature, top_p, top_k,
+                                    repetition_penalty, max_tokens, gap,
+                                    model_type, model_dir, selection):
+    if not prompt or not prompt.strip():
+        return None, "❌ 请输入音效描述"
+    if not selection or "未找到" in str(selection):
+        return None, "❌ 请先选择并加载模型"
+
+    # 解析模型路径
+    model_path = ""
+    for m in scan_models(model_dir):
+        if m["name"] in str(selection):
+            model_path = Path(m["path"]).as_posix()
+            break
+    if not model_path:
+        return None, "❌ 未找到模型路径"
+
+    import json as _json
+    params = {
+        "model_path": model_path,
+        "ambient_sound": prompt.strip(),
+        "audio_temperature": float(temperature),
+        "audio_top_p": float(top_p),
+        "audio_top_k": int(top_k),
+        "audio_repetition_penalty": float(repetition_penalty),
+        "max_new_tokens": int(max_tokens),
+        "gap_ms": int(gap),
+    }
+
+    # 写参数到临时 JSON 文件
+    params_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    )
+    _json.dump(params, params_file)
+    params_file.close()
+
+    # 输出 WAV 路径
+    out_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    out_path = Path(out_file.name).as_posix()
+    out_file.close()
+
+    code = f'''
+import json, sys
+params_file = r"{Path(params_file.name).as_posix()}"
+out_path = r"{out_path}"
+
+with open(params_file, "r", encoding="utf-8") as f:
+    params = json.load(f)
+
+sys.path.insert(0, r"{Path(__file__).parent.as_posix()}")
+from core.registry import get_adapter
+adapter = get_adapter("{model_type}")
+if not adapter:
+    print("FAIL: adapter not found")
+    sys.exit(1)
+
+adapter.load_model(params["model_path"], device="cuda")
+from core.adapter_base import TTSRequest
+request = TTSRequest(
+    text=params["ambient_sound"],
+    extra={{k: v for k, v in params.items() if k not in ("ambient_sound", "model_path", "gap_ms")}},
+)
+response = adapter.synthesize(request)
+audio = response.audio
+gap_ms = params.get("gap_ms", 0)
+if gap_ms != 0:
+    from core.audio_utils import adjust_sentence_gap
+    audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap_ms)
+import soundfile as sf
+sf.write(out_path, audio, response.sample_rate)
+print(f"OK|{{response.duration:.2f}}|{{response.sample_rate}}")
+'''
+
+    try:
+        stdout, stderr, rc = run_code_in_env(model_type, code, timeout=900)
+        if rc == 0 and "OK|" in stdout:
+            line = stdout.strip().split("\n")[-1]
+            _, duration, sr = line.split("|")
+            info = f"✅ 音效生成完成 | 时长: {float(duration):.2f}s | 采样率: {sr}Hz"
+            if gap != 0:
+                info += f" | 句间间隙: {gap}ms"
+            try:
+                Path(params_file.name).unlink()
+            except Exception:
+                pass
+            return out_path, info
+        else:
+            err = _clean_stderr(stderr) or stdout[:800]
+            try:
+                Path(params_file.name).unlink()
+            except Exception:
+                pass
+            return None, f"❌ 音效生成失败:\n{err}"
+    except Exception as e:
+        try:
+            Path(params_file.name).unlink()
+        except Exception:
+            pass
+        return None, f"❌ 音效生成失败: {e}"
 
 
 # ============================================================
@@ -678,6 +1071,10 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                                 minimum=0.5, maximum=2.0, value=1.0, step=0.1,
                                 label="语速",
                             )
+                            tts_gap = gr.Slider(
+                                minimum=-2000, maximum=2000, value=0, step=50,
+                                label="句间间隙 (ms, 0=不调整, 负数=缩减)",
+                            )
 
                         tts_model_type = gr.Textbox(
                             label="当前模型类型",
@@ -718,6 +1115,10 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                         batch_speed = gr.Slider(
                             minimum=0.5, maximum=2.0, value=1.0, step=0.1,
                             label="语速",
+                        )
+                        batch_gap = gr.Slider(
+                            minimum=-2000, maximum=2000, value=0, step=50,
+                            label="句间间隙 (ms, 0=不调整, 负数=缩减)",
                         )
                         batch_model_type = gr.Textbox(
                             label="当前模型类型",
@@ -784,7 +1185,260 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
                         )
                         ref_refresh_btn = gr.Button("🔄 刷新参考音频列表")
 
-            # === Tab 4: 检测工具 ===
+            # === Tab 4: 语音设计 ===
+            with gr.Tab("🎤 语音设计"):
+                gr.Markdown("### 语音设计 — 用文字描述音色，无需参考音频")
+                gr.Markdown("*仅需输入音色描述 + 合成文本，由 MOSS-VoiceGenerator 直接生成语音。需要 CUDA GPU。*")
+                with gr.Row():
+                    # 左侧：模型管理
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 📦 模型管理")
+
+                        vg_model_dropdown = gr.Dropdown(
+                            label="选择模型",
+                            choices=get_model_choices(model_dir),
+                            interactive=True,
+                        )
+
+                        vg_detection_info = gr.Textbox(
+                            label="模型检测详情",
+                            value="请选择一个模型查看检测信息",
+                            lines=5,
+                            interactive=False,
+                        )
+
+                        vg_load_btn = gr.Button("🚀 加载模型", variant="primary")
+                        vg_load_status = gr.Textbox(label="状态", lines=4, interactive=False)
+
+                        vg_model_type = gr.Textbox(
+                            label="当前模型类型",
+                            value="",
+                            interactive=False,
+                        )
+
+                    # 右侧：语音设计合成
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 🎨 音色设计")
+
+                        vg_instruction = gr.Textbox(
+                            label="音色描述 (Instruction)",
+                            placeholder="例如：一个温暖、轻柔的女声，语速缓慢、清晰。\n或者：一个疲惫、沙哑的老人声音，缓慢地抱怨。",
+                            lines=4,
+                        )
+
+                        vg_text = gr.Textbox(
+                            label="合成文本",
+                            placeholder="请输入要用该音色朗读的文本内容...",
+                            lines=5,
+                        )
+
+                        with gr.Accordion("采样参数", open=False):
+                            with gr.Row():
+                                vg_temperature = gr.Slider(
+                                    minimum=0.1, maximum=3.0, value=1.5, step=0.05,
+                                    label="audio_temperature",
+                                )
+                                vg_top_p = gr.Slider(
+                                    minimum=0.1, maximum=1.0, value=0.6, step=0.01,
+                                    label="audio_top_p",
+                                )
+                            with gr.Row():
+                                vg_top_k = gr.Slider(
+                                    minimum=1, maximum=200, value=50, step=1,
+                                    label="audio_top_k",
+                                )
+                                vg_repetition_penalty = gr.Slider(
+                                    minimum=0.8, maximum=2.0, value=1.0, step=0.05,
+                                    label="repetition_penalty",
+                                )
+                            vg_max_tokens = gr.Slider(
+                                minimum=256, maximum=8192, value=4096, step=128,
+                                label="max_new_tokens",
+                            )
+                            vg_gap = gr.Slider(
+                                minimum=-2000, maximum=2000, value=0, step=50,
+                                label="句间间隙 (ms, 0=不调整, 负数=缩减)",
+                            )
+
+                        vg_synthesize_btn = gr.Button("🎨 生成语音", variant="primary")
+                        vg_audio_output = gr.Audio(label="合成结果", type="filepath")
+                        vg_synth_status = gr.Textbox(label="合成信息", interactive=False)
+
+            # === Tab 5: 音效生成 ===
+            with gr.Tab("🔊 音效生成"):
+                gr.Markdown("### 音效生成 — 用文字描述生成环境音效")
+                gr.Markdown("*输入音效描述（如雨声、脚步声、鸟鸣等），由 MOSS-SoundEffect 直接生成。需要 CUDA GPU。*")
+                with gr.Row():
+                    # 左侧：模型管理
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 📦 模型管理")
+
+                        sf_model_dropdown = gr.Dropdown(
+                            label="选择模型",
+                            choices=get_model_choices(model_dir),
+                            interactive=True,
+                        )
+
+                        sf_detection_info = gr.Textbox(
+                            label="模型检测详情",
+                            value="请选择一个模型查看检测信息",
+                            lines=5,
+                            interactive=False,
+                        )
+
+                        sf_load_btn = gr.Button("🚀 加载模型", variant="primary")
+                        sf_load_status = gr.Textbox(label="状态", lines=4, interactive=False)
+
+                        sf_model_type = gr.Textbox(
+                            label="当前模型类型",
+                            value="",
+                            interactive=False,
+                        )
+
+                    # 右侧：音效合成
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 🎧 音效描述")
+
+                        sf_prompt = gr.Textbox(
+                            label="音效描述",
+                            placeholder="例如：雨声淅沥、远处有雷声隆隆。\n或者：清晨公园里的鸟鸣声，微风拂过树叶。",
+                            lines=4,
+                        )
+
+                        with gr.Accordion("采样参数", open=False):
+                            with gr.Row():
+                                sf_temperature = gr.Slider(
+                                    minimum=0.1, maximum=3.0, value=1.5, step=0.05,
+                                    label="audio_temperature",
+                                )
+                                sf_top_p = gr.Slider(
+                                    minimum=0.1, maximum=1.0, value=0.6, step=0.01,
+                                    label="audio_top_p",
+                                )
+                            with gr.Row():
+                                sf_top_k = gr.Slider(
+                                    minimum=1, maximum=200, value=50, step=1,
+                                    label="audio_top_k",
+                                )
+                                sf_repetition_penalty = gr.Slider(
+                                    minimum=0.8, maximum=2.0, value=1.2, step=0.05,
+                                    label="repetition_penalty",
+                                )
+                            sf_max_tokens = gr.Slider(
+                                minimum=256, maximum=8192, value=4096, step=128,
+                                label="max_new_tokens",
+                            )
+                            sf_gap = gr.Slider(
+                                minimum=-2000, maximum=2000, value=0, step=50,
+                                label="句间间隙 (ms, 0=不调整, 负数=缩减)",
+                            )
+
+                        sf_synthesize_btn = gr.Button("🔊 生成音效", variant="primary")
+                        sf_audio_output = gr.Audio(label="生成结果", type="filepath")
+                        sf_synth_status = gr.Textbox(label="生成信息", interactive=False)
+
+            # === Tab 6: 多轮对话 ===
+            with gr.Tab("💬 多轮对话"):
+                gr.Markdown("### 多轮对话 TTS 合成")
+                gr.Markdown("*设置两个说话人，逐条添加对话消息，可选参考音频进行声音克隆。需要 CUDA GPU。*")
+                with gr.Row():
+                    # 左侧：模型管理 + 说话人设置
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 📦 模型管理")
+                        rt_model_dropdown = gr.Dropdown(
+                            label="选择模型",
+                            choices=get_model_choices(model_dir),
+                            interactive=True,
+                        )
+                        rt_detection_info = gr.Textbox(
+                            label="模型检测详情",
+                            value="请选择一个模型查看检测信息",
+                            lines=4,
+                            interactive=False,
+                        )
+                        rt_load_btn = gr.Button("🚀 加载模型", variant="primary")
+                        rt_load_status = gr.Textbox(label="状态", lines=3, interactive=False)
+                        rt_model_type = gr.Textbox(
+                            label="当前模型类型", value="", interactive=False,
+                        )
+
+                        gr.Markdown("---")
+                        gr.Markdown("### 🎤 说话人设置")
+                        with gr.Row():
+                            rt_spk_a_name = gr.Textbox(label="说话人 A", value="A", placeholder="名字")
+                            rt_spk_b_name = gr.Textbox(label="说话人 B", value="B", placeholder="名字")
+                        with gr.Row():
+                            rt_spk_a_ref = gr.Dropdown(
+                                label="A 的参考音频（可选）",
+                                choices=get_reference_audio_choices(),
+                                interactive=True,
+                            )
+                            rt_spk_b_ref = gr.Dropdown(
+                                label="B 的参考音频（可选）",
+                                choices=get_reference_audio_choices(),
+                                interactive=True,
+                            )
+                        rt_refresh_ref_btn = gr.Button("🔄 刷新参考音频", variant="secondary")
+
+                    # 右侧：聊天合成
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 💬 对话记录")
+                        rt_chat_display = gr.Markdown(
+                            value="*（对话记录将显示在这里）*",
+                            elem_classes=["chat-container"],
+                        )
+
+                        with gr.Row():
+                            rt_msg_input = gr.Textbox(
+                                label="消息内容",
+                                placeholder="输入对话内容...",
+                                scale=3,
+                            )
+                            rt_msg_speaker = gr.Radio(
+                                label="说话人",
+                                choices=["A", "B"],
+                                value="A",
+                                scale=1,
+                            )
+                        with gr.Row():
+                            rt_add_msg_btn = gr.Button("➕ 添加消息", variant="secondary")
+                            rt_clear_chat_btn = gr.Button("🗑️ 清空对话", variant="secondary")
+
+                        rt_chat_state = gr.State([])
+
+                        with gr.Accordion("采样参数", open=False):
+                            with gr.Row():
+                                rt_temperature = gr.Slider(
+                                    minimum=0.1, maximum=3.0, value=0.8, step=0.05,
+                                    label="temperature",
+                                )
+                                rt_top_p = gr.Slider(
+                                    minimum=0.1, maximum=1.0, value=0.6, step=0.01,
+                                    label="top_p",
+                                )
+                            with gr.Row():
+                                rt_top_k = gr.Slider(
+                                    minimum=1, maximum=200, value=30, step=1,
+                                    label="top_k",
+                                )
+                                rt_repetition_penalty = gr.Slider(
+                                    minimum=0.8, maximum=2.0, value=1.1, step=0.05,
+                                    label="repetition_penalty",
+                                )
+                            rt_repetition_window = gr.Slider(
+                                minimum=10, maximum=200, value=50, step=10,
+                                label="repetition_window",
+                            )
+                            rt_gap = gr.Slider(
+                                minimum=-2000, maximum=2000, value=0, step=50,
+                                label="句间间隙 (ms, 0=不调整, 负数=缩减)",
+                            )
+
+                        rt_synthesize_btn = gr.Button("💬 合成对话", variant="primary")
+                        rt_audio_output = gr.Audio(label="合成结果", type="filepath")
+                        rt_synth_status = gr.Textbox(label="合成信息", interactive=False)
+
+            # === Tab 7: 检测工具 ===
             with gr.Tab("🔍 检测工具"):
                 with gr.Row():
                     detect_dir = gr.Textbox(
@@ -870,12 +1524,13 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
 
         # 主面板
         def refresh_models(dir_path):
-            return gr.update(choices=get_model_choices(dir_path))
+            choices = get_model_choices(dir_path)
+            return gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices)
 
         scan_btn.click(
             fn=refresh_models,
             inputs=[model_dir_input],
-            outputs=[model_dropdown],
+            outputs=[model_dropdown, vg_model_dropdown, sf_model_dropdown, rt_model_dropdown],
         )
 
         # 模型选择变化时更新检测详情
@@ -906,14 +1561,14 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
 
         synthesize_btn.click(
             fn=synthesize_handler,
-            inputs=[tts_text, tts_speaker, tts_language, tts_speed, tts_model_type],
+            inputs=[tts_text, tts_speaker, tts_language, tts_speed, tts_gap, tts_model_type],
             outputs=[audio_output, synth_status],
         )
 
         # 批量合成
         batch_btn.click(
             fn=batch_synthesize,
-            inputs=[batch_texts, batch_speaker, batch_language, batch_speed, batch_model_type],
+            inputs=[batch_texts, batch_speaker, batch_language, batch_speed, batch_gap, batch_model_type],
             outputs=[batch_audio, batch_status],
         )
 
@@ -963,6 +1618,173 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             fn=detect_single_handler,
             inputs=[detect_dir, detect_name],
             outputs=[detect_output],
+        )
+
+        # ============================================================
+        # 语音设计事件绑定
+        # ============================================================
+
+        # 语音设计模型下拉变化时更新检测详情
+        def on_vg_model_select(selection, model_dir):
+            return get_model_detection_info(model_dir, selection)
+
+        vg_model_dropdown.change(
+            fn=on_vg_model_select,
+            inputs=[vg_model_dropdown, model_dir_input],
+            outputs=[vg_detection_info],
+        )
+
+        # 语音设计模型加载
+        def on_vg_load(selection, device, model_dir):
+            status = load_model_handler(model_dir, selection, device)
+            mtype = ""
+            for m in scan_models(model_dir):
+                if m["name"] in selection:
+                    mtype = m["detection"]["model_type"]
+                    break
+            return status, mtype
+
+        vg_load_btn.click(
+            fn=on_vg_load,
+            inputs=[vg_model_dropdown, device_dropdown, model_dir_input],
+            outputs=[vg_load_status, vg_model_type],
+        )
+
+        # 语音设计合成
+        vg_synthesize_btn.click(
+            fn=voicegen_synthesize_handler,
+            inputs=[vg_text, vg_instruction, vg_temperature, vg_top_p,
+                    vg_top_k, vg_repetition_penalty, vg_max_tokens, vg_gap,
+                    vg_model_type, model_dir_input, vg_model_dropdown],
+            outputs=[vg_audio_output, vg_synth_status],
+        )
+
+        # ============================================================
+        # 音效生成事件绑定
+        # ============================================================
+
+        # 音效模型下拉变化时更新检测详情
+        def on_sf_model_select(selection, model_dir):
+            return get_model_detection_info(model_dir, selection)
+
+        sf_model_dropdown.change(
+            fn=on_sf_model_select,
+            inputs=[sf_model_dropdown, model_dir_input],
+            outputs=[sf_detection_info],
+        )
+
+        # 音效模型加载
+        def on_sf_load(selection, device, model_dir):
+            status = load_model_handler(model_dir, selection, device)
+            mtype = ""
+            for m in scan_models(model_dir):
+                if m["name"] in selection:
+                    mtype = m["detection"]["model_type"]
+                    break
+            return status, mtype
+
+        sf_load_btn.click(
+            fn=on_sf_load,
+            inputs=[sf_model_dropdown, device_dropdown, model_dir_input],
+            outputs=[sf_load_status, sf_model_type],
+        )
+
+        # 音效生成
+        sf_synthesize_btn.click(
+            fn=soundeffect_synthesize_handler,
+            inputs=[sf_prompt, sf_temperature, sf_top_p, sf_top_k,
+                    sf_repetition_penalty, sf_max_tokens, sf_gap,
+                    sf_model_type, model_dir_input, sf_model_dropdown],
+            outputs=[sf_audio_output, sf_synth_status],
+        )
+
+        # ============================================================
+        # 多轮对话事件绑定
+        # ============================================================
+
+        # 多轮对话模型下拉变化时更新检测详情
+        def on_rt_model_select(selection, model_dir):
+            return get_model_detection_info(model_dir, selection)
+
+        rt_model_dropdown.change(
+            fn=on_rt_model_select,
+            inputs=[rt_model_dropdown, model_dir_input],
+            outputs=[rt_detection_info],
+        )
+
+        # 多轮对话模型加载
+        def on_rt_load(selection, device, model_dir):
+            status = load_model_handler(model_dir, selection, device)
+            mtype = ""
+            for m in scan_models(model_dir):
+                if m["name"] in selection:
+                    mtype = m["detection"]["model_type"]
+                    break
+            return status, mtype
+
+        rt_load_btn.click(
+            fn=on_rt_load,
+            inputs=[rt_model_dropdown, device_dropdown, model_dir_input],
+            outputs=[rt_load_status, rt_model_type],
+        )
+
+        # 添加消息到对话
+        def add_chat_message(chat_state, msg_text, speaker, spk_a_name, spk_b_name):
+            if not msg_text or not msg_text.strip():
+                return chat_state, chat_to_markdown(chat_state, spk_a_name, spk_b_name)
+            chat_state = list(chat_state)  # 创建副本以触发 Gradio 更新
+            chat_state.append({"speaker": speaker, "text": msg_text.strip()})
+            return chat_state, chat_to_markdown(chat_state, spk_a_name, spk_b_name)
+
+        rt_add_msg_btn.click(
+            fn=add_chat_message,
+            inputs=[rt_chat_state, rt_msg_input, rt_msg_speaker,
+                    rt_spk_a_name, rt_spk_b_name],
+            outputs=[rt_chat_state, rt_chat_display],
+        )
+
+        # 清空对话
+        def clear_chat():
+            return [], "*（对话记录将显示在这里）*"
+
+        rt_clear_chat_btn.click(
+            fn=clear_chat,
+            inputs=[],
+            outputs=[rt_chat_state, rt_chat_display],
+        )
+
+        # 说话人名称变化时刷新显示
+        def refresh_chat_display(chat_state, spk_a_name, spk_b_name):
+            return chat_to_markdown(chat_state, spk_a_name, spk_b_name)
+
+        rt_spk_a_name.change(
+            fn=refresh_chat_display,
+            inputs=[rt_chat_state, rt_spk_a_name, rt_spk_b_name],
+            outputs=[rt_chat_display],
+        )
+        rt_spk_b_name.change(
+            fn=refresh_chat_display,
+            inputs=[rt_chat_state, rt_spk_a_name, rt_spk_b_name],
+            outputs=[rt_chat_display],
+        )
+
+        # 多轮对话合成
+        rt_synthesize_btn.click(
+            fn=realtime_synthesize_handler,
+            inputs=[rt_chat_state, rt_spk_a_name, rt_spk_b_name,
+                    rt_spk_a_ref, rt_spk_b_ref,
+                    rt_temperature, rt_top_p, rt_top_k,
+                    rt_repetition_penalty, rt_repetition_window, rt_gap,
+                    rt_model_type, model_dir_input, rt_model_dropdown],
+            outputs=[rt_audio_output, rt_synth_status],
+        )
+
+        # 参考音频刷新（多轮对话面板）
+        rt_refresh_ref_btn.click(
+            fn=lambda: (gr.update(choices=get_reference_audio_choices()),
+                        gr.update(choices=get_reference_audio_choices())),
+            inputs=[],
+            outputs=[rt_spk_a_ref, rt_spk_b_ref],
         )
 
         # ============================================================

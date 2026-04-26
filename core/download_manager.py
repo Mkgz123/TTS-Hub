@@ -13,10 +13,19 @@ from dataclasses import dataclass, field
 # 知名模型的 HuggingFace repo 映射
 KNOWN_MODELS = {
     "moss-tts": {
-        "OpenMOSS-Team/MOSS-TTSD-v1.0": "MOSS-TTSD v1.0 对话合成 (推荐)",
+        "OpenMOSS-Team/MOSS-TTSD-v1.0": "TTS · MOSS-TTSD v1.0 对话合成 (推荐)",
     },
     "moss-tts-nano": {
-        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "MOSS-TTS Nano 100M (轻量 CPU)",
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "TTS · MOSS-TTS Nano 100M (轻量 CPU)",
+    },
+    "moss-voicegen": {
+        "OpenMOSS-Team/MOSS-VoiceGenerator": "语音设计 · MOSS-VoiceGenerator (1.7B · CUDA)",
+    },
+    "moss-soundeffect": {
+        "OpenMOSS-Team/MOSS-SoundEffect": "音效 · MOSS-SoundEffect (8B · 文字描述生成音效)",
+    },
+    "moss-tts-realtime": {
+        "OpenMOSS-Team/MOSS-TTS-Realtime": "多轮对话 · MOSS-TTS-Realtime (1.7B · 流式 · CUDA)",
     },
 }
 
@@ -28,6 +37,9 @@ RELATED_REPOS = {
     },
     "moss-tts-nano": {
         "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano": "audio_tokenizer_nano",
+    },
+    "moss-tts-realtime": {
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer": "audio_tokenizer",
     },
 }
 

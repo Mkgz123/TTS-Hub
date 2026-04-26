@@ -66,3 +66,6 @@ def is_supported(model_type: str) -> bool:
 # 延迟注册 — 只注册元信息，实际 import 在 get_adapter() 时发生
 register_adapter("moss-tts", "core.adapters.moss_tts", "MossttsAdapter")
 register_adapter("moss-tts-nano", "core.adapters.moss_tts_nano", "MossTTSNanoAdapter")
+register_adapter("moss-voicegen", "core.adapters.moss_voicegen", "MossVoiceGenAdapter")
+register_adapter("moss-soundeffect", "core.adapters.moss_soundeffect", "MossSoundEffectAdapter")
+register_adapter("moss-tts-realtime", "core.adapters.moss_tts_realtime", "MossTTSRealtimeAdapter")

@@ -37,6 +37,32 @@ MODEL_REQUIREMENTS = {
             "sentencepiece",
         ],
     },
+    "moss-voicegen": {
+        "python": "3.12",
+        "conda": ["ffmpeg"],
+        "pip_cuda": ["torch>=2.5.1", "torchaudio"],
+        "pip": [
+            "transformers>=5.0", "safetensors", "accelerate", "soundfile", "torchaudio",
+        ],
+    },
+    "moss-soundeffect": {
+        "python": "3.12",
+        "conda": ["ffmpeg"],
+        "pip_cuda": ["torch>=2.5.1", "torchaudio"],
+        "pip": [
+            "transformers>=5.0", "safetensors", "accelerate", "soundfile", "torchaudio",
+        ],
+    },
+    "moss-tts-realtime": {
+        "python": "3.12",
+        "conda": ["ffmpeg"],
+        "pip_cuda": ["torch>=2.9.1", "torchaudio"],
+        "pip_cuda_index": "https://download.pytorch.org/whl/cu128",
+        "pip": [
+            "transformers>=5.0", "safetensors", "accelerate", "soundfile", "torchaudio",
+        ],
+        "post_install": "git clone https://github.com/OpenMOSS/MOSS-TTS.git {env_dir}\\MOSS-TTS && cd /d {env_dir}\\MOSS-TTS && {pip} install --no-deps -e .",
+    },
 }
 
 # PyTorch CUDA pip 源
@@ -313,7 +339,7 @@ def create_env_stream(model_type: str):
     if pip_cuda_deps and pip_cmd:
         has_gpu = _has_nvidia_gpu()
         if has_gpu:
-            torch_index = _PIP_TORCH_CUDA_INDEX
+            torch_index = req.get("pip_cuda_index", _PIP_TORCH_CUDA_INDEX)
             label = "CUDA"
         else:
             torch_index = _PIP_TORCH_CPU_INDEX
@@ -355,16 +381,33 @@ def create_env_stream(model_type: str):
         yield {"step": 5, "total": total, "icon": icon, "phase": phase,
                "line": f"{icon} 执行后置安装...", "done": False, "success": False}
         env_dir = get_env_path(model_type)
-        env_dir.mkdir(parents=True, exist_ok=True)  # 确保目标目录存在
+        env_dir.mkdir(parents=True, exist_ok=True)
         pip_str = " ".join(pip_cmd) if pip_cmd else "pip"
         post_cmd = post_install.format(
             env_dir=str(env_dir),
             pip=pip_str,
         )
-        # 使用 shell=True 以跨平台支持 &&、cd 等 shell 操作符
-        for line in _run_cmd_stream(post_cmd, shell=True):
+        # 使用 subprocess.run 直接执行以获取返回码
+        import subprocess as _sp
+        post_proc = _sp.Popen(
+            post_cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT,
+            text=True, bufsize=1, shell=True,
+            creationflags=_CREATE_FLAGS,
+        )
+        for line in post_proc.stdout:
             yield {"step": 5, "total": total, "icon": icon, "phase": phase,
-                   "line": f"  {line}", "done": False, "success": False}
+                   "line": f"  {line.rstrip()}", "done": False, "success": False}
+        try:
+            post_proc.wait(timeout=1200)
+        except _sp.TimeoutExpired:
+            post_proc.kill()
+            yield {"step": 5, "total": total, "icon": "❌", "phase": phase,
+                   "line": "❌ 后置安装超时（已取消）", "done": True, "success": False}
+            return
+        if post_proc.returncode != 0:
+            yield {"step": 5, "total": total, "icon": "❌", "phase": phase,
+                   "line": f"❌ 后置安装失败（退出码: {post_proc.returncode}）", "done": True, "success": False}
+            return
         yield {"step": 5, "total": total, "icon": "✅", "phase": phase,
                "line": f"✅ 后置安装完成", "done": False, "success": False}
     else:
@@ -431,7 +474,7 @@ def create_env(model_type: str, progress_callback=None) -> str:
         has_gpu = _has_nvidia_gpu()
         if has_gpu:
             log(f"安装 PyTorch CUDA 版: {pip_cuda_deps}")
-            torch_index = _PIP_TORCH_CUDA_INDEX
+            torch_index = req.get("pip_cuda_index", _PIP_TORCH_CUDA_INDEX)
         else:
             log(f"未检测到 NVIDIA GPU，安装 PyTorch CPU 版: {pip_cuda_deps}")
             torch_index = _PIP_TORCH_CPU_INDEX
