@@ -41,16 +41,46 @@ class MossTTSRealtimeAdapter(BaseTTSAdapter):
         try:
             import torch
             import torchaudio
-            # Monkey-patch torchaudio.load → soundfile，torchaudio 2.11+ 默认走 torchcodec 后端
-            import soundfile as _sf
+            # Monkey-patch torchaudio.load，torchaudio 2.11+ 默认走 torchcodec 后端
+            # 优先用 scipy(WAV)/soundfile(其他)，避免 conda 环境中 libsndfile 不可用
+            try:
+                import soundfile as _sf
+                _has_sf = True
+            except (ImportError, OSError):
+                _has_sf = False
+            try:
+                from scipy.io import wavfile as _wavfile
+                _has_scipy = True
+            except ImportError:
+                _has_scipy = False
+
             _torchaudio_load = torchaudio.load
+
             def _patched_load(uri, *args, **kwargs):
-                data, sr = _sf.read(uri, dtype="float32", always_2d=False)
-                if data.ndim == 1:
-                    data = data.reshape(1, -1)
+                import os as _os
+                ext = _os.path.splitext(str(uri))[1].lower()
+                if ext in (".wav", ".wave") and _has_scipy:
+                    sr, data = _wavfile.read(uri)
+                    if data.dtype == np.int16:
+                        data = data.astype(np.float32) / 32768.0
+                    elif data.dtype == np.int32:
+                        data = data.astype(np.float32) / 2147483648.0
+                    else:
+                        data = data.astype(np.float32)
+                    if data.ndim == 1:
+                        data = data.reshape(1, -1)
+                    else:
+                        data = data.T
+                    return torch.from_numpy(data.copy()), sr
+                elif _has_sf:
+                    data, sr = _sf.read(uri, dtype="float32", always_2d=False)
+                    if data.ndim == 1:
+                        data = data.reshape(1, -1)
+                    else:
+                        data = data.T
+                    return torch.from_numpy(data.copy()), sr
                 else:
-                    data = data.T
-                return torch.from_numpy(data.copy()), sr
+                    return _torchaudio_load(uri, *args, **kwargs)
             torchaudio.load = _patched_load
 
             from transformers import AutoTokenizer, AutoModel
@@ -195,6 +225,13 @@ class MossTTSRealtimeAdapter(BaseTTSAdapter):
             audio = audio_parts[0].numpy()
         else:
             audio = torch.cat(audio_parts, dim=-1).numpy()
+
+        # codec 输出 (channels, samples)，转为 WAV 标准 (samples,) 或 (samples, channels)
+        if audio.ndim == 2:
+            if audio.shape[0] == 1:
+                audio = audio.squeeze(0)
+            else:
+                audio = audio.T
 
         return TTSResponse.from_numpy(audio.astype(np.float32), self._sample_rate)
 

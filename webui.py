@@ -438,7 +438,7 @@ sys.path.insert(0, '{Path(__file__).parent.as_posix()}')
 
 from core.registry import get_adapter
 from core.adapter_base import TTSRequest
-import soundfile as sf
+from scipy.io import wavfile
 
 adapter = get_adapter('{model_type}')
 # 需要找到模型路径 — 从已加载状态或扫描
@@ -473,7 +473,7 @@ gap = {gap}
 if gap != 0:
     from core.audio_utils import adjust_sentence_gap
     audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap)
-sf.write('{output_path}', audio, response.sample_rate)
+wavfile.write('{output_path}', response.sample_rate, audio)
 print('SYNTH_OK')
 """
     try:
@@ -628,8 +628,8 @@ gap_ms = params.get("gap_ms", 0)
 if gap_ms != 0:
     from core.audio_utils import adjust_sentence_gap
     audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap_ms)
-import soundfile as sf
-sf.write(out_path, audio, response.sample_rate)
+from scipy.io import wavfile
+wavfile.write(out_path, response.sample_rate, audio)
 print(f"OK|{{response.duration:.2f}}|{{response.sample_rate}}")
 '''
 
@@ -787,8 +787,8 @@ gap_ms = params.get("gap_ms", 0)
 if gap_ms != 0:
     from core.audio_utils import adjust_sentence_gap
     audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap_ms)
-import soundfile as sf
-sf.write(out_path, audio, response.sample_rate, format='WAV')
+from scipy.io import wavfile
+wavfile.write(out_path, response.sample_rate, audio)
 print(f"OK|{{response.duration:.2f}}|{{response.sample_rate}}")
 '''
 
@@ -892,8 +892,8 @@ gap_ms = params.get("gap_ms", 0)
 if gap_ms != 0:
     from core.audio_utils import adjust_sentence_gap
     audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap_ms)
-import soundfile as sf
-sf.write(out_path, audio, response.sample_rate)
+from scipy.io import wavfile
+wavfile.write(out_path, response.sample_rate, audio)
 print(f"OK|{{response.duration:.2f}}|{{response.sample_rate}}")
 '''
 
@@ -996,7 +996,7 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
         gr.Markdown("# 🎙️ TTS Hub — 统一 TTS 模型管理")
         gr.Markdown("下载模型即用，自动检测架构，一键切换")
 
-        with gr.Tabs():
+        with gr.Tabs() as tabs:
             # === Tab 1: 模型管理 + 合成 ===
             with gr.Tab("🏠 主面板"):
                 with gr.Row():
@@ -1531,6 +1531,13 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             outputs=[model_dropdown, vg_model_dropdown, sf_model_dropdown, rt_model_dropdown],
         )
 
+        # 切换 Tab 时自动刷新模型列表
+        tabs.select(
+            fn=refresh_models,
+            inputs=[model_dir_input],
+            outputs=[model_dropdown, vg_model_dropdown, sf_model_dropdown, rt_model_dropdown],
+        )
+
         # 模型选择变化时更新检测详情
         def on_model_select(selection, model_dir):
             info = get_model_detection_info(model_dir, selection)
@@ -1570,11 +1577,16 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             outputs=[batch_audio, batch_status],
         )
 
-        # 模型下载
+        # 模型下载（同时刷新模型列表）
+        def download_and_refresh(selection, model_dir):
+            status = download_model_handler(selection, model_dir)
+            choices = get_model_choices(model_dir)
+            return status, gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices)
+
         download_btn.click(
-            fn=download_model_handler,
+            fn=download_and_refresh,
             inputs=[known_models_dropdown, download_dir],
-            outputs=[download_status],
+            outputs=[download_status, model_dropdown, vg_model_dropdown, sf_model_dropdown, rt_model_dropdown],
         )
 
         local_refresh_btn.click(
@@ -1583,11 +1595,16 @@ def build_ui(model_dir: str = DEFAULT_MODEL_DIR) -> gr.Blocks:
             outputs=[local_models_display],
         )
 
-        # 自定义链接下载
+        # 自定义链接下载（同时刷新模型列表）
+        def download_url_and_refresh(url, model_dir):
+            status = download_from_url_handler(url, model_dir)
+            choices = get_model_choices(model_dir)
+            return status, gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices)
+
         custom_url_btn.click(
-            fn=download_from_url_handler,
+            fn=download_url_and_refresh,
             inputs=[custom_url_input, download_dir],
-            outputs=[custom_url_status],
+            outputs=[custom_url_status, model_dropdown, vg_model_dropdown, sf_model_dropdown, rt_model_dropdown],
         )
 
         # 参考音频刷新（主面板）
