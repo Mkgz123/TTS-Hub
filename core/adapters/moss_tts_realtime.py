@@ -30,9 +30,6 @@ class MossTTSRealtimeAdapter(BaseTTSAdapter):
         self._inferencer = None
 
     def load_model(self, model_path: str, device: str = "cuda") -> None:
-        import os as _os
-        _os.environ.setdefault("TORCHAUDIO_BACKEND", "soundfile")
-
         import sys
 
         # MOSS-TTS 仓库路径 — post_install 克隆到 envs/<model>/MOSS-TTS
@@ -43,6 +40,19 @@ class MossTTSRealtimeAdapter(BaseTTSAdapter):
 
         try:
             import torch
+            import torchaudio
+            # Monkey-patch torchaudio.load → soundfile，torchaudio 2.11+ 默认走 torchcodec 后端
+            import soundfile as _sf
+            _torchaudio_load = torchaudio.load
+            def _patched_load(uri, *args, **kwargs):
+                data, sr = _sf.read(uri, dtype="float32", always_2d=False)
+                if data.ndim == 1:
+                    data = data.reshape(1, -1)
+                else:
+                    data = data.T
+                return torch.from_numpy(data.copy()), sr
+            torchaudio.load = _patched_load
+
             from transformers import AutoTokenizer, AutoModel
             from mossttsrealtime.modeling_mossttsrealtime import MossTTSRealtime
             from inferencer import MossTTSRealtimeInference

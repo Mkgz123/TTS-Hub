@@ -61,7 +61,7 @@ MODEL_REQUIREMENTS = {
         "pip": [
             "transformers>=5.0", "safetensors", "accelerate", "soundfile", "torchaudio",
         ],
-        "post_install": "git clone https://github.com/OpenMOSS/MOSS-TTS.git {env_dir}\\MOSS-TTS && cd /d {env_dir}\\MOSS-TTS && {pip} install --no-deps -e .",
+        "post_install": "if not exist {env_dir}\\MOSS-TTS git clone https://github.com/OpenMOSS/MOSS-TTS.git {env_dir}\\MOSS-TTS && cd /d {env_dir}\\MOSS-TTS && {pip} install --no-deps -e .",
     },
 }
 

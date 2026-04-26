@@ -749,8 +749,6 @@ def multiturn_synthesize_handler(chat_state, spk_a_name, spk_b_name,
     out_file.close()
 
     code = f'''
-import os as _os
-_os.environ.setdefault("TORCHAUDIO_BACKEND", "soundfile")
 import json, sys
 params_file = r"{Path(params_file.name).as_posix()}"
 out_path = r"{out_path}"
@@ -790,7 +788,7 @@ if gap_ms != 0:
     from core.audio_utils import adjust_sentence_gap
     audio = adjust_sentence_gap(audio, response.sample_rate, gap_ms=gap_ms)
 import soundfile as sf
-sf.write(out_path, audio, response.sample_rate)
+sf.write(out_path, audio, response.sample_rate, format='WAV')
 print(f"OK|{{response.duration:.2f}}|{{response.sample_rate}}")
 '''
 
